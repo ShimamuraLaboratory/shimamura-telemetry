@@ -1,0 +1,47 @@
+# shimamura-telemetry の systemd unit。
+#
+# 設定ファイル /etc/shimamura-telemetry/config.toml にはエージェントトークンが含まれるため、
+# root だけが読めるようにしておくこと:
+#   sudo install -d -m 0700 -o root -g root /etc/shimamura-telemetry
+#   sudo install -m 0600 -o root -g root config.toml /etc/shimamura-telemetry/config.toml
+#
+# 他ユーザーのプロセス情報や GPU（/dev/nvidia*）を読むため root で動かす。
+# その代わり、書き込みやネットワーク以外の権限は下の設定で絞る。
+
+[Unit]
+Description=Shimamura telemetry agent
+Documentation=https://github.com/ShimamuraLaboratory/shimamura-telemetry
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/shimamura-telemetry run --config /etc/shimamura-telemetry/config.toml
+Restart=always
+RestartSec=5s
+
+User=root
+Group=root
+UMask=0077
+
+# ハードニング
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# GPU（NVML）は /dev/nvidia* を使うため PrivateDevices は有効にしない。
+
+[Install]
+WantedBy=multi-user.target
