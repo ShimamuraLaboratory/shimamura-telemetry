@@ -58,7 +58,12 @@ func (a *Agent) tick(ctx context.Context) {
 		return
 	}
 	if err := a.sender.Send(ctx, snapshot); err != nil {
-		if !errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, context.Canceled):
+		case errors.Is(err, transport.ErrNotConnected):
+			// 接続・切断の理由は Sender がログに出している。再接続を待つ間は 5 秒ごとに出さない
+			a.logger.Debug("skipped sending while disconnected", "error", err)
+		default:
 			a.logger.Error("failed to send", "error", err)
 		}
 	}

@@ -4,6 +4,8 @@ go 1.25.0
 
 require github.com/BurntSushi/toml v1.6.0
 
+require github.com/coder/websocket v1.8.15
+
 require (
 	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect

@@ -12,9 +12,8 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 - メッセージ形式は shimamura-IdP の `pkg/schema/src/serverMonitor/messages.ts`（プロトコルバージョン 1）に従います
 
 > [!NOTE]
-> 現在は開発中です。CPU・メモリ・SSD（gopsutil）と GPU（nvidia-smi）の収集は実装済みで、`shimamura-telemetry collect` で確認できます。
-> プロセスの収集と送信処理（WebSocket）は未実装のため、
-> `shimamura-telemetry run` は設定ファイルを読み込んだ後「未実装」として終了します。
+> 現在は開発中です。CPU・メモリ・SSD（gopsutil）・GPU（nvidia-smi）の収集と、監視 Worker への送信（WebSocket）は実装済みです。
+> プロセスの収集（Issue #5）、インストールスクリプト（Issue #6）、リリース（Issue #7）は未実装です。
 
 ## 必要なもの
 
@@ -80,6 +79,14 @@ sudo install -m 0600 -o root -g root deploy/config.example.toml /etc/shimamura-t
 unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/systemd/shimamura-telemetry.service) にあります。
 他ユーザーのプロセス情報や GPU を読むため root で動かし、その代わりにハードニングの設定で権限を絞っています。
 
+### 監視 Worker との接続
+
+- 設定ファイルの `url`（例: `wss://idp-monitor.example.com/agent/connect`）へ、`Authorization: Bearer <agent_token>` を付けて WebSocket で接続します
+- 切断・接続の失敗後は指数バックオフ（1 秒から倍々で最大 1 分、ジッター付き）で再接続します。1 分以上つながっていた接続が切れた場合は 1 秒から数え直します
+- 再接続を待っている間に収集したメトリクスは送らずに捨てます（リアルタイム表示用のため、後からまとめて送りません）
+- 認証に失敗した（401）・トークンが再発行された場合は、設定ファイルを直すまで成功しないため 5 分ごとに再接続を試みます
+- 同じトークンで別のエージェントが接続して切られた場合は、互いに切り合わないよう 1 分待ってから再接続します
+
 ### GPU について
 
 GPU の情報は NVIDIA のドライバに同梱されている `nvidia-smi` を実行して読みます（NVML の値と同じです）。
@@ -105,7 +112,7 @@ sudo systemctl enable --now shimamura-telemetry.service
 │   ├── agent/                 # 収集と送信を一定間隔で繰り返すループ
 │   ├── collector/             # リソース情報の収集処理（CPU・メモリ・SSD は gopsutil）
 │   ├── config/                # 設定ファイルの読み込みと検証
-│   ├── transport/             # 監視 Worker への送信処理（インターフェース）
+│   ├── transport/             # 監視 Worker への送信処理（WebSocket・再接続）
 │   └── version/               # ビルド時に埋め込むバージョン情報
 ├── deploy/
 │   ├── config.example.toml    # 設定ファイルの例
