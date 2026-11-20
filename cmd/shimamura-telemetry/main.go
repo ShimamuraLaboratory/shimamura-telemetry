@@ -13,8 +13,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/agent"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/collector"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/config"
+	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/transport"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/version"
 )
 
@@ -111,9 +113,11 @@ func runAgent(args []string, stderr io.Writer) int {
 		"interval", cfg.Interval.Duration,
 	)
 
-	// TODO: collector（gopsutil / go-nvml）と transport（WebSocket）の実装ができたら
-	// agent.New(collector, sender, cfg.Interval.Duration, logger).Run(ctx) を呼ぶ。
-	_ = ctx
-	logger.Error("collector and sender are not implemented yet")
-	return 1
+	sender := transport.NewWebSocket(cfg.URL, cfg.AgentToken, logger)
+	if err := agent.New(collector.NewSystem(logger), sender, cfg.Interval.Duration, logger).Run(ctx); err != nil {
+		logger.Error("agent stopped", "error", err)
+		return 1
+	}
+	logger.Info("stopped shimamura-telemetry")
+	return 0
 }

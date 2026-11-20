@@ -1,13 +1,16 @@
-// Package transport は収集したリソース情報を監視 Worker へ送る処理のインターフェースを定義する。
-//
-// 実装（監視 Worker への外向き WebSocket 接続、再接続、認証）は後続の PR で追加する。
+// Package transport は収集したリソース情報を監視 Worker へ送る処理を提供する。
 package transport
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/collector"
 )
+
+// ErrNotConnected は監視 Worker に接続できていないため、スナップショットを送らずに捨てたことを表す。
+// 接続・切断の理由は Sender 側でログに出しているため、呼び出し側では詳しく出さなくてよい。
+var ErrNotConnected = errors.New("not connected to the monitor")
 
 // Sender はスナップショットを監視 Worker へ送る。
 type Sender interface {

@@ -1,15 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/collector"
+	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/transport"
 )
 
 type fakeCollector struct {
@@ -86,5 +90,49 @@ func TestRunContinuesOnCollectError(t *testing.T) {
 	}
 	if !s.closed {
 		t.Error("sender was not closed")
+	}
+}
+
+// errSender は常に同じエラーを返す Sender。
+type errSender struct {
+	err    error
+	cancel context.CancelFunc
+	sent   int
+}
+
+func (e *errSender) Send(context.Context, *collector.Snapshot) error {
+	e.sent++
+	if e.sent >= 2 {
+		e.cancel()
+	}
+	return e.err
+}
+
+func (e *errSender) Close() error { return nil }
+
+// 再接続を待っている間（ErrNotConnected）は、送信のたびにエラーログを出さない。
+func TestRunLogsSendErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantLog bool
+	}{
+		{"not connected", fmt.Errorf("%w: dial failed", transport.ErrNotConnected), false},
+		{"other error", errors.New("message too large"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var logs bytes.Buffer
+			s := &errSender{err: tt.err, cancel: cancel}
+			a := New(&fakeCollector{}, s, 10*time.Millisecond, slog.New(slog.NewTextHandler(&logs, nil)))
+			if err := a.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(logs.String(), "failed to send"); got != tt.wantLog {
+				t.Errorf("logged = %v, want %v:\n%s", got, tt.wantLog, logs.String())
+			}
+		})
 	}
 }
