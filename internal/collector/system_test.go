@@ -315,7 +315,11 @@ func TestNewSystemCollectsFromOS(t *testing.T) {
 	if m.Memory.TotalBytes == 0 || m.Memory.UsedBytes > m.Memory.TotalBytes {
 		t.Errorf("memory = %+v", m.Memory)
 	}
-	if len(m.Disks) == 0 {
-		t.Error("no disks")
+	// コンテナ内（overlay・tmpfs・bind mount だけ）ではディスクが空になるのが正しいため、件数は確認しない。
+	// ディスクの絞り込みは fakeSource を使ったテストで確認している。
+	for _, d := range m.Disks {
+		if d.TotalBytes == 0 || d.UsedBytes > d.TotalBytes {
+			t.Errorf("disk = %+v", d)
+		}
 	}
 }
