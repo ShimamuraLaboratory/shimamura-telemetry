@@ -54,6 +54,9 @@ var errNoNvidiaSMI = errors.New("nvidia-smi not found")
 // gpuReader は GPU の情報を読む。テストで差し替えるために分けている。
 type gpuReader interface {
 	ReadGPUs(ctx context.Context) ([]GPUMetrics, error)
+	// ReadGPUProcesses は GPU を使っているプロセスの PID ごとの GPU メモリの使用量（バイト）を読む。
+	// 複数の GPU を使うプロセスは合計する。
+	ReadGPUProcesses(ctx context.Context) (map[int32]uint64, error)
 }
 
 // nvidiaSMI は nvidia-smi を実行して GPU の情報を読む gpuReader。
@@ -70,6 +73,25 @@ func newNvidiaSMI() *nvidiaSMI {
 // ReadGPUs は nvidia-smi で GPU ごとの情報を読む。
 // nvidia-smi が無い場合は errNoNvidiaSMI を返す。
 func (n *nvidiaSMI) ReadGPUs(ctx context.Context) ([]GPUMetrics, error) {
+	out, err := n.query(ctx, "--query-gpu="+strings.Join(nvidiaSMIQuery, ","))
+	if err != nil {
+		return nil, err
+	}
+	return parseNvidiaSMI(out)
+}
+
+// ReadGPUProcesses は nvidia-smi で GPU を使っているプロセスを読む。
+// nvidia-smi が無い場合は errNoNvidiaSMI を返す。
+func (n *nvidiaSMI) ReadGPUProcesses(ctx context.Context) (map[int32]uint64, error) {
+	out, err := n.query(ctx, "--query-compute-apps=pid,used_memory")
+	if err != nil {
+		return nil, err
+	}
+	return parseNvidiaSMIProcesses(out)
+}
+
+// query は nvidia-smi を CSV（ヘッダ・単位なし）で実行する。
+func (n *nvidiaSMI) query(ctx context.Context, query string) ([]byte, error) {
 	// ドライバが後から入る場合もあるため、毎回探す（PATH を見るだけなので軽い）
 	path, err := n.lookPath("nvidia-smi")
 	if err != nil {
@@ -77,14 +99,7 @@ func (n *nvidiaSMI) ReadGPUs(ctx context.Context) ([]GPUMetrics, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, n.timeout)
 	defer cancel()
-	out, err := n.run(ctx, path,
-		"--query-gpu="+strings.Join(nvidiaSMIQuery, ","),
-		"--format=csv,noheader,nounits",
-	)
-	if err != nil {
-		return nil, err
-	}
-	return parseNvidiaSMI(out)
+	return n.run(ctx, path, query, "--format=csv,noheader,nounits")
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -145,6 +160,31 @@ func parseNvidiaSMI(out []byte) ([]GPUMetrics, error) {
 		})
 	}
 	return gpus, nil
+}
+
+// parseNvidiaSMIProcesses は nvidia-smi --query-compute-apps=pid,used_memory の CSV を読む。
+// 使用量が取得できない（"[N/A]"）場合は 0 とする。
+func parseNvidiaSMIProcesses(out []byte) (map[int32]uint64, error) {
+	r := csv.NewReader(bytes.NewReader(out))
+	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = 2
+
+	procs := map[int32]uint64{}
+	for {
+		rec, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse nvidia-smi output: %w", err)
+		}
+		pid, err := strconv.ParseInt(strings.TrimSpace(rec[0]), 10, 32)
+		if err != nil || pid <= 0 {
+			return nil, fmt.Errorf("parse nvidia-smi output: invalid pid %q", rec[0])
+		}
+		procs[int32(pid)] += mibToBytes(parseNumber(rec[1]))
+	}
+	return procs, nil
 }
 
 // parseNumber は数値を読む。"[N/A]" などの数値でない値は nil を返す。

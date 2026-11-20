@@ -73,7 +73,7 @@ type GPUMetrics struct {
 	PowerW *float64 `json:"powerW"`
 }
 
-// ProcessMetrics は ProcessMetricsSchema に対応する。収集は Issue #5 で行う。
+// ProcessMetrics は ProcessMetricsSchema に対応する。収集は processes.go で行う。
 type ProcessMetrics struct {
 	PID  int32  `json:"pid"`
 	User string `json:"user"`

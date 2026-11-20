@@ -12,8 +12,8 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 - メッセージ形式は shimamura-IdP の `pkg/schema/src/serverMonitor/messages.ts`（プロトコルバージョン 1）に従います
 
 > [!NOTE]
-> 現在は開発中です。CPU・メモリ・SSD（gopsutil）・GPU（nvidia-smi）の収集と、監視 Worker への送信（WebSocket）は実装済みです。
-> プロセスの収集（Issue #5）、インストールスクリプト（Issue #6）、リリース（Issue #7）は未実装です。
+> 現在は開発中です。CPU・メモリ・SSD・プロセス（gopsutil）・GPU（nvidia-smi）の収集と、監視 Worker への送信（WebSocket）は実装済みです。
+> インストールスクリプト（Issue #6）とリリース（Issue #7）は未実装です。
 
 ## 必要なもの
 
@@ -78,6 +78,19 @@ sudo install -m 0600 -o root -g root deploy/config.example.toml /etc/shimamura-t
 
 unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/systemd/shimamura-telemetry.service) にあります。
 他ユーザーのプロセス情報や GPU を読むため root で動かし、その代わりにハードニングの設定で権限を絞っています。
+
+### プロセスについて
+
+リソースを多く使っているのが誰の何かをサーバー詳細で見られるよう、次のプロセスを合わせて最大 100 件送ります。
+
+- GPU を使っているプロセス（全て。`nvidia-smi --query-compute-apps` で読む）
+- CPU 使用率の上位 20 件（前回の収集からの CPU 時間の差から求める。複数コアを使うと 100% を超える）
+- メモリ使用量（RSS）の上位 20 件
+
+送るのは PID・ユーザー名・コマンド名・CPU 使用率・メモリ使用量・GPU メモリ使用量だけです。
+コマンドライン引数にはパスワードやトークンが含まれうるため送りません。
+コマンド名は Linux では 15 文字で切り詰められるため、その場合は実行ファイル名を使います。
+ユーザー名は `/etc/passwd` で引けない場合（LDAP・SSSD など）は `getent passwd` で引き、それでも引けなければ UID を送ります。
 
 ### 監視 Worker との接続
 
