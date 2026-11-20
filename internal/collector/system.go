@@ -69,11 +69,12 @@ func (gopsutilSource) DiskUsage(ctx context.Context, path string) (*disk.UsageSt
 	return disk.UsageWithContext(ctx, path)
 }
 
-// System は CPU・メモリ・SSD（gopsutil）と GPU（nvidia-smi）の使用状況を収集する Collector。
-// プロセス（Issue #5）は収集せず、Processes は nil で返す。
+// System は CPU・メモリ・SSD・プロセス（gopsutil）と GPU（nvidia-smi）の使用状況を収集する Collector。
 type System struct {
-	source          systemSource
-	gpu             gpuReader
+	source systemSource
+	gpu    gpuReader
+	// processes が nil のときはプロセスを収集しない（Processes は nil で送らない）。
+	processes       *processCollector
 	logger          *slog.Logger
 	now             func() time.Time
 	firstSampleWait time.Duration
@@ -96,14 +97,15 @@ func NewSystem(logger *slog.Logger) *System {
 	return &System{
 		source:          gopsutilSource{},
 		gpu:             newNvidiaSMI(),
+		processes:       newProcessCollector(time.Now),
 		logger:          logger,
 		now:             time.Now,
 		firstSampleWait: defaultFirstSampleWait,
 	}
 }
 
-// Collect は CPU・メモリ・SSD・GPU の使用状況を収集する。
-// CPU・メモリが読めない場合はエラーを返す。SSD・GPU が読めない場合はログに残して空で返す
+// Collect は CPU・メモリ・SSD・GPU・プロセスの使用状況を収集する。
+// CPU・メモリが読めない場合はエラーを返す。SSD・GPU・プロセスが読めない場合はログに残して空で返す
 // （GPU の無いサーバーや、ドライバが応答しない場合でも CPU・メモリは送り続けるため）。
 func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 	s.mu.Lock()
@@ -125,7 +127,11 @@ func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 		s.logger.Warn("failed to collect disks", "error", err)
 		disks = []DiskMetrics{}
 	}
-	gpus, err := s.collectGPUs(ctx)
+	gpus, gpuProcesses, err := s.collectGPUs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	processes, err := s.collectProcesses(ctx, gpuProcesses)
 	if err != nil {
 		return nil, err
 	}
@@ -133,12 +139,29 @@ func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 	return &Snapshot{
 		CollectedAt: s.now(),
 		Metrics: Metrics{
-			CPU:    cpuMetrics,
-			Memory: memory,
-			Disks:  disks,
-			GPUs:   gpus,
+			CPU:       cpuMetrics,
+			Memory:    memory,
+			Disks:     disks,
+			GPUs:      gpus,
+			Processes: processes,
 		},
 	}, nil
+}
+
+// collectProcesses はプロセスを読む。ctx のキャンセル以外のエラーは nil（送らない）にして返す。
+func (s *System) collectProcesses(ctx context.Context, gpuMemory map[int32]uint64) ([]ProcessMetrics, error) {
+	if s.processes == nil {
+		return nil, nil
+	}
+	processes, err := s.processes.collect(ctx, gpuMemory)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		s.logger.Warn("failed to collect processes", "error", err)
+		return nil, nil
+	}
+	return processes, nil
 }
 
 // gpuState は GPU の読み取り結果の状態。
@@ -151,11 +174,12 @@ const (
 	gpuStateError
 )
 
-// collectGPUs は GPU の情報を読む。ctx のキャンセル以外のエラーは空のスライスにして返す。
+// collectGPUs は GPU の情報と、GPU を使っているプロセス（PID ごとの GPU メモリ）を読む。
+// ctx のキャンセル以外のエラーは空にして返す。
 // 5 秒ごとに同じログが出続けないよう、状態が変わったときだけログに出す。
-func (s *System) collectGPUs(ctx context.Context) ([]GPUMetrics, error) {
+func (s *System) collectGPUs(ctx context.Context) ([]GPUMetrics, map[int32]uint64, error) {
 	if s.gpu == nil {
-		return []GPUMetrics{}, nil
+		return []GPUMetrics{}, nil, nil
 	}
 	gpus, err := s.gpu.ReadGPUs(ctx)
 	switch {
@@ -164,9 +188,20 @@ func (s *System) collectGPUs(ctx context.Context) ([]GPUMetrics, error) {
 			s.logger.Info("collecting gpu metrics", "gpus", len(gpus))
 		}
 		s.gpuState = gpuStateOK
-		return gpus, nil
+		if s.processes == nil || len(gpus) == 0 {
+			return gpus, nil, nil
+		}
+		procs, err := s.gpu.ReadGPUProcesses(ctx)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, nil, ctxErr
+			}
+			s.logger.Debug("failed to collect gpu processes", "error", err)
+			return gpus, nil, nil
+		}
+		return gpus, procs, nil
 	case ctx.Err() != nil:
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	case errors.Is(err, errNoNvidiaSMI):
 		if s.gpuState != gpuStateNoDriver {
 			s.logger.Info("nvidia-smi not found; gpu metrics are disabled")
@@ -178,14 +213,18 @@ func (s *System) collectGPUs(ctx context.Context) ([]GPUMetrics, error) {
 		}
 		s.gpuState = gpuStateError
 	}
-	return []GPUMetrics{}, nil
+	return []GPUMetrics{}, nil, nil
 }
 
 func (s *System) collectCPU(ctx context.Context) (CPUMetrics, error) {
 	if s.prevTotal == nil {
-		// 初回は基準となる累積時間を読んでから少し待つ
+		// 初回は基準となる累積時間を読んでから少し待つ。プロセスの CPU 使用率も同じく 2 時点の差から求めるため、
+		// ここで基準を読んでおく（読めなくても次回から求められるので無視する）
 		if err := s.readCPUTimes(ctx); err != nil {
 			return CPUMetrics{}, err
+		}
+		if s.processes != nil {
+			_ = s.processes.baseline(ctx)
 		}
 		if err := sleep(ctx, s.firstSampleWait); err != nil {
 			return CPUMetrics{}, err

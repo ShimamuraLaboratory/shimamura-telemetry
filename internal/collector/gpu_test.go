@@ -180,12 +180,18 @@ func TestRunCommand(t *testing.T) {
 }
 
 type fakeGPUReader struct {
-	gpus []GPUMetrics
-	err  error
+	gpus     []GPUMetrics
+	err      error
+	procs    map[int32]uint64
+	procsErr error
 }
 
 func (f *fakeGPUReader) ReadGPUs(context.Context) ([]GPUMetrics, error) {
 	return f.gpus, f.err
+}
+
+func (f *fakeGPUReader) ReadGPUProcesses(context.Context) (map[int32]uint64, error) {
+	return f.procs, f.procsErr
 }
 
 func TestSystemCollectGPUs(t *testing.T) {
@@ -250,6 +256,8 @@ type readerFunc func(context.Context) ([]GPUMetrics, error)
 
 func (f readerFunc) ReadGPUs(ctx context.Context) ([]GPUMetrics, error) { return f(ctx) }
 
+func (readerFunc) ReadGPUProcesses(context.Context) (map[int32]uint64, error) { return nil, nil }
+
 func dumpGPUs(gpus []GPUMetrics) string {
 	var b strings.Builder
 	for _, g := range gpus {
@@ -263,4 +271,54 @@ func deref(v *float64) any {
 		return nil
 	}
 	return *v
+}
+
+func TestParseNvidiaSMIProcesses(t *testing.T) {
+	out := strings.Join([]string{
+		"1234, 10240",
+		// 複数の GPU を使うプロセスは合計する
+		"5678, 2048",
+		"5678, 1024",
+		"9999, [N/A]",
+	}, "\n") + "\n"
+	got, err := parseNvidiaSMIProcesses([]byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int32]uint64{1234: 10240 * mib, 5678: 3072 * mib, 9999: 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	if got, err := parseNvidiaSMIProcesses(nil); err != nil || len(got) != 0 {
+		t.Errorf("empty: got %v, %v", got, err)
+	}
+	for _, bad := range []string{"x, 10\n", "0, 10\n", "1\n"} {
+		if _, err := parseNvidiaSMIProcesses([]byte(bad)); err == nil {
+			t.Errorf("parseNvidiaSMIProcesses(%q) succeeded", bad)
+		}
+	}
+}
+
+func TestNvidiaSMIReadGPUProcesses(t *testing.T) {
+	var gotArgs []string
+	n := &nvidiaSMI{
+		lookPath: func(string) (string, error) { return "nvidia-smi", nil },
+		run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			gotArgs = args
+			return []byte("42, 100\n"), nil
+		},
+		timeout: time.Second,
+	}
+	got, err := n.ReadGPUProcesses(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[42] != 100*mib {
+		t.Errorf("got %v", got)
+	}
+	want := []string{"--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"}
+	if !reflect.DeepEqual(gotArgs, want) {
+		t.Errorf("args = %v", gotArgs)
+	}
 }
