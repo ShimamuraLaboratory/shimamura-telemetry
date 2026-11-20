@@ -147,17 +147,23 @@ func (s *System) collectCPU(ctx context.Context) (CPUMetrics, error) {
 		return CPUMetrics{}, err
 	}
 
+	// CPU のオフライン・オンラインで並びがずれることがあるため、前回の値はコア名（"cpu3" など）で対応付ける。
+	// 前回の値が無いコアは 0 とする
+	prevByName := make(map[string]cpu.TimesStat, len(prevCores))
+	for _, p := range prevCores {
+		prevByName[p.CPU] = p
+	}
 	cores := make([]float64, 0, min(len(s.prevCores), MaxCores))
-	for i, cur := range s.prevCores {
-		if i >= MaxCores {
+	for _, cur := range s.prevCores {
+		if len(cores) >= MaxCores {
 			break
 		}
-		// CPU のホットプラグなどで数が変わった場合、前回の無いコアは 0 とする
-		if i >= len(prevCores) {
+		prev, ok := prevByName[cur.CPU]
+		if !ok {
 			cores = append(cores, 0)
 			continue
 		}
-		cores = append(cores, usagePercent(prevCores[i], cur))
+		cores = append(cores, usagePercent(prev, cur))
 	}
 	return CPUMetrics{
 		UsagePercent: usagePercent(prevTotal, *s.prevTotal),

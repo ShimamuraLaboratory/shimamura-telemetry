@@ -90,10 +90,10 @@ func TestSystemCollectCPU(t *testing.T) {
 		{User: 230, System: 60, Idle: 850, Iowait: 60},
 	}
 	src.cpuCores = [][]cpu.TimesStat{
-		{{User: 10, Idle: 90}, {User: 10, Idle: 90}},
-		{{User: 20, Idle: 90}, {User: 10, Idle: 190}},
+		{{CPU: "cpu0", User: 10, Idle: 90}, {CPU: "cpu1", User: 10, Idle: 90}},
+		{{CPU: "cpu0", User: 20, Idle: 90}, {CPU: "cpu1", User: 10, Idle: 190}},
 		// コアが 1 つ増えた
-		{{User: 20, Idle: 100}, {User: 10, Idle: 190}, {User: 5, Idle: 5}},
+		{{CPU: "cpu0", User: 20, Idle: 100}, {CPU: "cpu1", User: 10, Idle: 190}, {CPU: "cpu2", User: 5, Idle: 5}},
 	}
 	s := newTestSystem(src)
 
@@ -117,6 +117,35 @@ func TestSystemCollectCPU(t *testing.T) {
 	}
 	if got := snap.Metrics.CPU.Cores; len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 0 {
 		t.Errorf("second cores = %v, want [0 0 0]", got)
+	}
+}
+
+// 途中のコアがオフラインになって並びがずれても、コア名で前回の値と対応付ける。
+func TestSystemCollectCPUCoreOffline(t *testing.T) {
+	src := baseSource()
+	src.cpuCores = [][]cpu.TimesStat{
+		{{CPU: "cpu0", User: 0, Idle: 0}, {CPU: "cpu1", User: 1000, Idle: 0}, {CPU: "cpu2", User: 0, Idle: 1000}},
+		// cpu1 がオフラインになり、cpu2 が 2 番目に来た
+		{{CPU: "cpu0", User: 10, Idle: 10}, {CPU: "cpu2", User: 0, Idle: 1010}},
+		// cpu1 がオンラインに戻った（前回の値が無いので 0）
+		{{CPU: "cpu0", User: 20, Idle: 20}, {CPU: "cpu1", User: 2000, Idle: 0}, {CPU: "cpu2", User: 10, Idle: 1010}},
+	}
+	s := newTestSystem(src)
+
+	snap, err := s.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Metrics.CPU.Cores; len(got) != 2 || got[0] != 50 || got[1] != 0 {
+		t.Errorf("first cores = %v, want [50 0]", got)
+	}
+
+	snap, err = s.Collect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Metrics.CPU.Cores; len(got) != 3 || got[0] != 50 || got[1] != 0 || got[2] != 100 {
+		t.Errorf("second cores = %v, want [50 0 100]", got)
 	}
 }
 
