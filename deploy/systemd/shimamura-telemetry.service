@@ -41,7 +41,7 @@ RestrictNamespaces=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
-# GPU（NVML）は /dev/nvidia* を使うため PrivateDevices は有効にしない。
+# GPU の情報を読む nvidia-smi は /dev/nvidia* を使うため PrivateDevices は有効にしない。
 
 [Install]
 WantedBy=multi-user.target

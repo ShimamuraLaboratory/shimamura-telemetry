@@ -4,7 +4,7 @@
 
 ## 概要
 
-各計算機サーバーで常駐し、CPU・メモリ・SSD・GPU（NVML）・プロセスの情報を一定間隔（既定 5 秒）で収集して、
+各計算機サーバーで常駐し、CPU・メモリ・SSD・GPU（nvidia-smi）・プロセスの情報を一定間隔（既定 5 秒）で収集して、
 Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの WebSocket で送ります。
 サーバーは Cloudflare Zero Trust の内側にあるため、エージェントから外へ接続する形をとります。
 
@@ -12,8 +12,8 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 - メッセージ形式は shimamura-IdP の `pkg/schema/src/serverMonitor/messages.ts`（プロトコルバージョン 1）に従います
 
 > [!NOTE]
-> 現在は開発中です。CPU・メモリ・SSD の収集（gopsutil）は実装済みで、`shimamura-telemetry collect` で確認できます。
-> GPU（go-nvml）・プロセスの収集と送信処理（WebSocket）は未実装のため、
+> 現在は開発中です。CPU・メモリ・SSD（gopsutil）と GPU（nvidia-smi）の収集は実装済みで、`shimamura-telemetry collect` で確認できます。
+> プロセスの収集と送信処理（WebSocket）は未実装のため、
 > `shimamura-telemetry run` は設定ファイルを読み込んだ後「未実装」として終了します。
 
 ## 必要なもの
@@ -79,6 +79,14 @@ sudo install -m 0600 -o root -g root deploy/config.example.toml /etc/shimamura-t
 
 unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/systemd/shimamura-telemetry.service) にあります。
 他ユーザーのプロセス情報や GPU を読むため root で動かし、その代わりにハードニングの設定で権限を絞っています。
+
+### GPU について
+
+GPU の情報は NVIDIA のドライバに同梱されている `nvidia-smi` を実行して読みます（NVML の値と同じです）。
+公式の go-nvml は cgo が必須で、単一の静的バイナリとして配布できなくなるため使っていません。
+
+- `nvidia-smi` が PATH に無いサーバーでは GPU を空として送り、CPU・メモリ・SSD は送り続けます
+- ドライバが応答しない場合も同様です（1 回の実行は 3 秒で打ち切ります）。ログは状態が変わったときだけ出します
 
 ```bash
 sudo install -m 0755 bin/shimamura-telemetry-linux-amd64 /usr/local/bin/shimamura-telemetry

@@ -69,15 +69,18 @@ func (gopsutilSource) DiskUsage(ctx context.Context, path string) (*disk.UsageSt
 	return disk.UsageWithContext(ctx, path)
 }
 
-// System は gopsutil で CPU・メモリ・SSD の使用状況を収集する Collector。
-// GPU（Issue #3）とプロセス（Issue #5）は収集せず、GPUs は空、Processes は nil で返す。
+// System は CPU・メモリ・SSD（gopsutil）と GPU（nvidia-smi）の使用状況を収集する Collector。
+// プロセス（Issue #5）は収集せず、Processes は nil で返す。
 type System struct {
 	source          systemSource
+	gpu             gpuReader
 	logger          *slog.Logger
 	now             func() time.Time
 	firstSampleWait time.Duration
 
 	mu sync.Mutex
+	// gpuState は前回の GPU の読み取り結果。状態が変わったときだけログに出すために使う。
+	gpuState gpuState
 	// prevTotal・prevCores は前回の Collect で読んだ CPU の累積時間。初回は nil。
 	prevTotal *cpu.TimesStat
 	prevCores []cpu.TimesStat
@@ -92,14 +95,16 @@ func NewSystem(logger *slog.Logger) *System {
 	}
 	return &System{
 		source:          gopsutilSource{},
+		gpu:             newNvidiaSMI(),
 		logger:          logger,
 		now:             time.Now,
 		firstSampleWait: defaultFirstSampleWait,
 	}
 }
 
-// Collect は CPU・メモリ・SSD の使用状況を収集する。
-// CPU・メモリが読めない場合はエラーを返す。SSD が読めない場合はログに残して空で返す。
+// Collect は CPU・メモリ・SSD・GPU の使用状況を収集する。
+// CPU・メモリが読めない場合はエラーを返す。SSD・GPU が読めない場合はログに残して空で返す
+// （GPU の無いサーバーや、ドライバが応答しない場合でも CPU・メモリは送り続けるため）。
 func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,6 +125,10 @@ func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 		s.logger.Warn("failed to collect disks", "error", err)
 		disks = []DiskMetrics{}
 	}
+	gpus, err := s.collectGPUs(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Snapshot{
 		CollectedAt: s.now(),
@@ -127,9 +136,49 @@ func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 			CPU:    cpuMetrics,
 			Memory: memory,
 			Disks:  disks,
-			GPUs:   []GPUMetrics{},
+			GPUs:   gpus,
 		},
 	}, nil
+}
+
+// gpuState は GPU の読み取り結果の状態。
+type gpuState int
+
+const (
+	gpuStateUnknown gpuState = iota
+	gpuStateOK
+	gpuStateNoDriver
+	gpuStateError
+)
+
+// collectGPUs は GPU の情報を読む。ctx のキャンセル以外のエラーは空のスライスにして返す。
+// 5 秒ごとに同じログが出続けないよう、状態が変わったときだけログに出す。
+func (s *System) collectGPUs(ctx context.Context) ([]GPUMetrics, error) {
+	if s.gpu == nil {
+		return []GPUMetrics{}, nil
+	}
+	gpus, err := s.gpu.ReadGPUs(ctx)
+	switch {
+	case err == nil:
+		if s.gpuState != gpuStateOK {
+			s.logger.Info("collecting gpu metrics", "gpus", len(gpus))
+		}
+		s.gpuState = gpuStateOK
+		return gpus, nil
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case errors.Is(err, errNoNvidiaSMI):
+		if s.gpuState != gpuStateNoDriver {
+			s.logger.Info("nvidia-smi not found; gpu metrics are disabled")
+		}
+		s.gpuState = gpuStateNoDriver
+	default:
+		if s.gpuState != gpuStateError {
+			s.logger.Warn("failed to collect gpus", "error", err)
+		}
+		s.gpuState = gpuStateError
+	}
+	return []GPUMetrics{}, nil
 }
 
 func (s *System) collectCPU(ctx context.Context) (CPUMetrics, error) {

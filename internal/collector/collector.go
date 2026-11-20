@@ -60,7 +60,7 @@ type DiskMetrics struct {
 	UsedBytes  uint64 `json:"usedBytes"`
 }
 
-// GPUMetrics は GpuMetricsSchema に対応する。収集は go-nvml で行う（Issue #3）。
+// GPUMetrics は GpuMetricsSchema に対応する。収集は nvidia-smi で行う（gpu.go）。
 type GPUMetrics struct {
 	Index              int     `json:"index"`
 	Name               string  `json:"name"`
