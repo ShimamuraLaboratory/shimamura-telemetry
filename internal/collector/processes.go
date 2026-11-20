@@ -44,6 +44,10 @@ const (
 	userCacheNegativeTTL = 10 * time.Minute
 	// getentTimeout は getent 1 回の実行の上限。
 	getentTimeout = 2 * time.Second
+	// userLookupBudget は 1 回の収集でユーザー名を引くのに使える時間の合計。
+	// LDAP・SSSD が応答しない場合に、送るプロセスの数だけ getent の待ちが積み重なって
+	// CPU・メモリなど他の値まで送れなくなるのを防ぐ。使い切ったら残りは UID を数字のまま送る。
+	userLookupBudget = 2 * time.Second
 )
 
 // procSample はプロセス 1 つ分の、順位付けに使う値。
@@ -142,6 +146,8 @@ type processCollector struct {
 	source processSource
 	users  *userResolver
 	now    func() time.Time
+	// userBudget は 1 回の収集でユーザー名を引くのに使える時間の合計（userLookupBudget）。
+	userBudget time.Duration
 
 	// prev・prevAt は前回読んだ全プロセスの CPU 時間とその時刻。
 	prev   map[int32]prevProc
@@ -149,7 +155,7 @@ type processCollector struct {
 }
 
 func newProcessCollector(now func() time.Time) *processCollector {
-	return &processCollector{source: gopsutilProcessSource{}, users: newUserResolver(now), now: now}
+	return &processCollector{source: gopsutilProcessSource{}, users: newUserResolver(now), now: now, userBudget: userLookupBudget}
 }
 
 // baseline は次回の CPU 使用率の基準として、全プロセスの CPU 時間を読んでおく。
@@ -200,6 +206,8 @@ func (p *processCollector) collect(ctx context.Context, gpuMemory map[int32]uint
 	}
 
 	pids := selectProcesses(samples, cpuPercent, gpuMemory, byPID)
+	userCtx, cancel := context.WithTimeout(ctx, p.userBudget)
+	defer cancel()
 	result := make([]ProcessMetrics, 0, len(pids))
 	for _, pid := range pids {
 		if err := ctx.Err(); err != nil {
@@ -212,7 +220,7 @@ func (p *processCollector) collect(ctx context.Context, gpuMemory map[int32]uint
 		}
 		m := ProcessMetrics{
 			PID:         pid,
-			User:        truncateRunes(p.users.lookup(ctx, info.UID), MaxUserLength),
+			User:        truncateRunes(p.users.lookup(userCtx, info.UID), MaxUserLength),
 			Name:        truncateRunes(info.Name, MaxProcessNameLength),
 			CPUPercent:  cpuPercent[pid],
 			MemoryBytes: byPID[pid].RSS,
@@ -305,6 +313,8 @@ func newUserResolver(now func() time.Time) *userResolver {
 	}
 }
 
+// lookup は UID からユーザー名を引く。引けない場合は UID を数字のまま返す。
+// ctx が終わっている（時間を使い切った）場合は getent を実行せず、結果も覚えない（次回の収集で引き直す）。
 func (r *userResolver) lookup(ctx context.Context, uid uint32) string {
 	id := strconv.FormatUint(uint64(uid), 10)
 	if e, ok := r.cache[uid]; ok && (e.ok || r.now().Sub(e.at) < userCacheNegativeTTL) {
@@ -315,10 +325,15 @@ func (r *userResolver) lookup(ctx context.Context, uid uint32) string {
 	}
 	name, err := r.lookupID(id)
 	if err != nil || name == "" {
+		if ctx.Err() != nil {
+			return id
+		}
 		name, err = r.getent(ctx, id)
 	}
 	if err != nil || name == "" {
-		r.cache[uid] = userEntry{ok: false, at: r.now()}
+		if ctx.Err() == nil {
+			r.cache[uid] = userEntry{ok: false, at: r.now()}
+		}
 		return id
 	}
 	r.cache[uid] = userEntry{name: name, ok: true, at: r.now()}

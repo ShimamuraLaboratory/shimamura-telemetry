@@ -64,7 +64,7 @@ func newTestProcessCollector(src *fakeProcessSource, now func() time.Time) *proc
 		},
 		cache: map[uint32]userEntry{},
 	}
-	return &processCollector{source: src, users: users, now: now}
+	return &processCollector{source: src, users: users, now: now, userBudget: time.Minute}
 }
 
 func TestProcessCollectorCPUAndSelection(t *testing.T) {
@@ -299,4 +299,49 @@ func diffProcesses(got []ProcessMetrics, want []string) string {
 		return ""
 	}
 	return fmt.Sprintf("got:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+}
+
+// LDAP などが応答しない場合でも、ユーザー名を引く時間の合計で打ち切って UID を送る。
+func TestProcessCollectorUserLookupBudget(t *testing.T) {
+	var samples []procSample
+	infos := map[int32]procInfo{}
+	for i := range int32(50) {
+		pid := i + 1
+		samples = append(samples, procSample{PID: pid, CreateTime: 1, RSS: uint64(pid)})
+		infos[pid] = procInfo{Name: "p", UID: uint32(5000 + pid)}
+	}
+	src := &fakeProcessSource{samples: [][]procSample{samples}, infos: infos}
+	p := newTestProcessCollector(src, time.Now)
+	p.userBudget = 100 * time.Millisecond
+	getents := 0
+	// 応答しない getent（ctx が終わるまで待つ）
+	p.users.getent = func(ctx context.Context, _ string) (string, error) {
+		getents++
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+
+	start := time.Now()
+	got, err := p.collect(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("collect took %v", d)
+	}
+	if len(got) != topByMemory {
+		t.Fatalf("len = %d, want %d", len(got), topByMemory)
+	}
+	for _, m := range got {
+		if m.User != fmt.Sprint(5000+m.PID) {
+			t.Errorf("user = %q, want numeric uid", m.User)
+		}
+	}
+	// 時間切れで打ち切った分は覚えず、次の収集で引き直す
+	if getents != 1 {
+		t.Errorf("getents = %d, want 1", getents)
+	}
+	if len(p.users.cache) != 0 {
+		t.Errorf("cache = %v, want empty", p.users.cache)
+	}
 }
