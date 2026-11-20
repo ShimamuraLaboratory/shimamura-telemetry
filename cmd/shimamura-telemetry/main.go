@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/collector"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/config"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/version"
 )
@@ -20,6 +22,7 @@ const usage = `Usage: shimamura-telemetry <command> [options]
 
 Commands:
   run       エージェントを起動する
+  collect   リソース情報を 1 回収集して JSON で表示する (動作確認用)
   version   バージョンを表示する
 
 Run 'shimamura-telemetry run -h' for run options.
@@ -38,6 +41,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runAgent(args[1:], stderr)
+	case "collect":
+		return runCollect(stdout, stderr)
 	case "version", "--version", "-v":
 		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
@@ -48,6 +53,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "unknown command: %s\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+// runCollect はリソース情報を 1 回収集し、送信メッセージの measuredAt・metrics と同じ形で表示する。
+// 設定ファイルは読まないため、インストール前の動作確認にも使える。
+func runCollect(stdout, stderr io.Writer) int {
+	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	snapshot, err := collector.NewSystem(logger).Collect(ctx)
+	if err != nil {
+		logger.Error("failed to collect", "error", err)
+		return 1
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(struct {
+		MeasuredAt int64             `json:"measuredAt"`
+		Metrics    collector.Metrics `json:"metrics"`
+	}{snapshot.CollectedAt.UnixMilli(), snapshot.Metrics}); err != nil {
+		logger.Error("failed to encode", "error", err)
+		return 1
+	}
+	return 0
 }
 
 func runAgent(args []string, stderr io.Writer) int {
