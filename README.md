@@ -9,10 +9,11 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 サーバーは Cloudflare Zero Trust の内側にあるため、エージェントから外へ接続する形をとります。
 
 - 仕様: shimamura-IdP の Issue #527（エージェント本体）、#526（メッセージ形式と監視 Worker）
-- メッセージ形式は shimamura-IdP の `pkg/schema` で定義される予定のため、このリポジトリではまだ確定していません
+- メッセージ形式は shimamura-IdP の `pkg/schema/src/serverMonitor/messages.ts`（プロトコルバージョン 1）に従います
 
 > [!NOTE]
-> 現在は雛形の段階です。収集処理（gopsutil / go-nvml）と送信処理（WebSocket）はインターフェースのみで、
+> 現在は開発中です。CPU・メモリ・SSD の収集（gopsutil）は実装済みで、`shimamura-telemetry collect` で確認できます。
+> GPU（go-nvml）・プロセスの収集と送信処理（WebSocket）は未実装のため、
 > `shimamura-telemetry run` は設定ファイルを読み込んだ後「未実装」として終了します。
 
 ## 必要なもの
@@ -46,6 +47,9 @@ make lint
 ```bash
 # バージョンを表示
 ./bin/shimamura-telemetry version
+
+# リソース情報を 1 回収集して JSON で表示（設定ファイル不要。送信メッセージの measuredAt・metrics と同じ形）
+./bin/shimamura-telemetry collect
 
 # エージェントを起動（既定の設定ファイルは /etc/shimamura-telemetry/config.toml）
 ./bin/shimamura-telemetry run --config /etc/shimamura-telemetry/config.toml
@@ -91,7 +95,7 @@ sudo systemctl enable --now shimamura-telemetry.service
 │   └── shimamura-telemetry/   # CLI のエントリポイント（run / version サブコマンド）
 ├── internal/
 │   ├── agent/                 # 収集と送信を一定間隔で繰り返すループ
-│   ├── collector/             # リソース情報の収集処理（インターフェース）
+│   ├── collector/             # リソース情報の収集処理（CPU・メモリ・SSD は gopsutil）
 │   ├── config/                # 設定ファイルの読み込みと検証
 │   ├── transport/             # 監視 Worker への送信処理（インターフェース）
 │   └── version/               # ビルド時に埋め込むバージョン情報
