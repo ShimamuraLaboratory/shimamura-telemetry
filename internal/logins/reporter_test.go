@@ -46,6 +46,8 @@ type fakeSource struct {
 	err       error
 	// wtmpErr は wtmp（Backlog・NewEvents）だけのエラー。
 	wtmpErr error
+	// newEventsCalls は NewEvents が呼ばれた回数。
+	newEventsCalls int
 }
 
 func (s *fakeSource) Sessions() ([]Session, error) { return s.sessions, s.err }
@@ -56,6 +58,7 @@ func (s *fakeSource) Backlog(since time.Time) ([]Event, error) {
 }
 
 func (s *fakeSource) NewEvents() ([]Event, error) {
+	s.newEventsCalls++
 	e := s.newEvents
 	s.newEvents = nil
 	return e, cmpErr(s.wtmpErr, s.err)
@@ -345,5 +348,64 @@ func TestReporterReadErrorPerFile(t *testing.T) {
 	tr.tick(2 * time.Second)
 	if n := strings.Count(tr.logs.String(), `msg="reading login records recovered" file=wtmp`); n != 1 {
 		t.Errorf("recovery logged %d times:\n%s", n, tr.logs.String())
+	}
+}
+
+// セッションが頻繁に変わっても、イベントも送られる（セッションとイベントを交互に送る）。
+func TestReporterEventsAreNotStarvedBySessions(t *testing.T) {
+	tr := newTestReporter()
+	tr.conn.id = 1
+	tr.tick(time.Second) // 接続直後
+	for i := range 20 {
+		tr.src.sessions = []Session{{User: "lab", TTY: "pts/0", LoginAt: int64(i + 1)}}
+		tr.src.newEvents = []Event{login("lab", int64(i+1))}
+		tr.tick(ackWindow)
+	}
+	counts := map[string]int{}
+	for _, typ := range tr.types() {
+		counts[typ]++
+	}
+	if counts["login_events"] < 8 || counts["sessions"] < 8 {
+		t.Errorf("sent = %v", counts)
+	}
+	// イベントが溜まり続けない（交互に送れば 1 回で溜まった分をまとめて送る）
+	if n := len(tr.pendingEvents); n > 2 {
+		t.Errorf("pending events = %d", n)
+	}
+}
+
+// 接続直後に wtmp が読めなかった場合、読めるようになったら（24 時間に絞った）直近のイベントを読み直す。
+func TestReporterRetriesBacklogAfterReadFailure(t *testing.T) {
+	tr := newTestReporter()
+	tr.conn.id = 1
+	tr.src.sessions = []Session{}
+	tr.src.wtmpErr = errors.New("permission denied")
+	tr.tick(time.Second)
+	tr.tick(ackWindow)
+	// 読めない間も、続きからの読み取り（24 時間に絞らずに wtmp 全体を読んでしまう）はしない
+	if tr.src.newEventsCalls != 0 {
+		t.Fatalf("NewEvents was called %d times while the backlog is pending", tr.src.newEventsCalls)
+	}
+
+	tr.src.wtmpErr = nil
+	tr.src.backlog = []Event{login("recent", 2)}
+	tr.tick(ackWindow)
+	tr.tick(ackWindow)
+	if got := strings.Join(tr.types(), ","); got != "sessions,login_events" {
+		t.Fatalf("sent = %v", tr.conn.sent)
+	}
+	if !strings.Contains(tr.conn.sent[1], `"recent"`) {
+		t.Errorf("events = %s", tr.conn.sent[1])
+	}
+	if tr.backlogPending {
+		t.Error("backlog is still pending")
+	}
+
+	// 読み直した後は続きから読む
+	tr.src.newEvents = []Event{login("next", 3)}
+	tr.tick(ackWindow)
+	tr.tick(ackWindow)
+	if last := tr.conn.sent[len(tr.conn.sent)-1]; !strings.Contains(last, `"next"`) {
+		t.Errorf("last sent = %s", last)
 	}
 }

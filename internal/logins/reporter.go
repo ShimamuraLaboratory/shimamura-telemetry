@@ -92,6 +92,12 @@ type Reporter struct {
 	now    func() time.Time
 
 	connID uint64
+	// backlogPending は接続し直した後、直近 24 時間のイベントをまだ読めていないか。
+	// 読めるまで（wtmp が一時的に読めない場合など）は続きからの読み取りをせず、読み直しを続ける。
+	backlogPending bool
+	// lastPickedSessions は前回セッションを選んだか。セッションとイベントの両方がある場合に交互に送るために使う。
+	// 接続し直したらまずセッションを送るよう、reset で false に戻す。
+	lastPickedSessions bool
 	// pendingSessions は次に送るセッションの一覧（新しいものだけ残す）。
 	pendingSessions *sessionsMessage
 	// pendingEvents は次に送るイベント。
@@ -153,19 +159,31 @@ func (r *Reporter) step(ctx context.Context) {
 // reset は接続し直したときに、送るものを今のセッションと直近 24 時間のイベントにする。
 func (r *Reporter) reset(now time.Time) {
 	r.retry, r.inflight, r.pendingEvents, r.pendingSessions = nil, nil, nil, nil
+	r.lastPickedSessions = false
 	r.lastSessions, r.lastSessionsAt = nil, time.Time{}
 	r.pollSessions(now, true)
+	r.backlogPending = true
+	r.loadBacklog(now)
+}
 
+// loadBacklog は直近 24 時間のイベントを読み、送るものにする。失敗したら次の poll で読み直す。
+func (r *Reporter) loadBacklog(now time.Time) {
 	events, err := r.source.Backlog(now.Add(-backlogWindow))
 	if r.logReadError("wtmp", err) {
 		return
 	}
+	r.backlogPending = false
 	r.pendingEvents = events
 }
 
 // poll は変化したセッションと新しいイベントを、送るものに加える。
 func (r *Reporter) poll(now time.Time) {
 	r.pollSessions(now, false)
+	if r.backlogPending {
+		// 続きから読むと、直近 24 時間に絞らずに wtmp 全体を読んでしまうため、読めるまで Backlog を読み直す
+		r.loadBacklog(now)
+		return
+	}
 	events, err := r.source.NewEvents()
 	if r.logReadError("wtmp", err) {
 		return
@@ -264,21 +282,26 @@ func (r *Reporter) sendNext(ctx context.Context, now time.Time) {
 	r.inflight = &inflight{out: out, sentAt: now, errorCount: errCount}
 }
 
-// next は次に送るメッセージを取り出す。
+// next は次に送るメッセージを取り出す。送り直しを先に送り、セッションとイベントの両方がある場合は交互に送る
+// （セッションが頻繁に変わるサーバーで、イベントがいつまでも送られないことが無いように）。
 func (r *Reporter) next() (outgoing, bool) {
-	switch {
-	case r.retry != nil:
+	if r.retry != nil {
 		out := *r.retry
 		r.retry = nil
 		return out, true
-	case r.pendingSessions != nil:
+	}
+	hasEvents := len(r.pendingEvents) > 0
+	if r.pendingSessions != nil && (!hasEvents || !r.lastPickedSessions) {
 		msg := r.pendingSessions
 		r.pendingSessions = nil
+		r.lastPickedSessions = true
 		fitSessions(msg)
 		return outgoing{msg: msg}, true
-	case len(r.pendingEvents) > 0:
+	}
+	if hasEvents {
 		msg, rest := takeEvents(r.pendingEvents)
 		r.pendingEvents = rest
+		r.lastPickedSessions = false
 		if msg == nil {
 			return outgoing{}, false
 		}
