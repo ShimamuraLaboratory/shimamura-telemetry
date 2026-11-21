@@ -5,11 +5,11 @@
 # 再実行しても壊れない（冪等）。2 回目以降は、渡した項目だけ設定を書き換え、バイナリと unit を更新して再起動する。
 #
 # 使い方:
-#   curl -fsSL <install.sh の URL> | sudo sh -s -- \
+#   curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh -s -- \
 #     --server-id <サーバー ID> --token <エージェントトークン> --url wss://<監視 Worker>/agent/connect
 #
 #   # アンインストール（設定ファイルも削除する）
-#   curl -fsSL <install.sh の URL> | sudo sh -s -- --uninstall
+#   curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh -s -- --uninstall
 #
 # オプション:
 #   --server-id ID         IdP で登録した計算機サーバーの ID（初回は必須）
@@ -19,7 +19,7 @@
 #   --interval DURATION    収集・送信の間隔（例: 5s。省略時は既存の値、無ければ 5s）
 #   --binary PATH          ダウンロードせず、手元のバイナリをインストールする
 #   --version TAG          インストールするリリース（例: v0.1.0。省略時は最新）
-#   --download-base URL    バイナリの取得元（<URL>/shimamura-telemetry-linux-<arch> を取得する）
+#   --download-base URL    バイナリの取得元（<URL>/shimamura-telemetry-linux-<arch> と <URL>/checksums.txt を取得する）
 #   --uninstall            サービスを止め、バイナリ・unit・設定ファイルを削除する
 #   -h, --help             この説明を表示する
 
@@ -52,7 +52,7 @@ Usage: install.sh [options]
   --interval DURATION    収集・送信の間隔（例: 5s。省略時は既存の値、無ければ 5s）
   --binary PATH          ダウンロードせず、手元のバイナリをインストールする
   --version TAG          インストールするリリース（例: v0.1.0。省略時は最新）
-  --download-base URL    バイナリの取得元（<URL>/shimamura-telemetry-linux-<arch> を取得する）
+  --download-base URL    バイナリの取得元（<URL>/shimamura-telemetry-linux-<arch> と <URL>/checksums.txt を取得する）
   --uninstall            サービスを止め、バイナリ・unit・設定ファイルを削除する
   -h, --help             この説明を表示する
 USAGE
@@ -159,8 +159,9 @@ install -d -m 0755 "$(dirname "$BIN_PATH")"
 tmp_config="$(mktemp "$CONFIG_DIR/.config.toml.XXXXXX")"
 tmp_bin="$(mktemp "$BIN_PATH.XXXXXX")"
 tmp_unit="$(mktemp "$UNIT_PATH.XXXXXX")"
+tmp_sums="$(mktemp)"
 cleanup() {
-	rm -f "$tmp_config" "$tmp_bin" "$tmp_unit"
+	rm -f "$tmp_config" "$tmp_bin" "$tmp_unit" "$tmp_sums"
 }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
@@ -189,9 +190,19 @@ else
 			download_base="https://github.com/$REPO/releases/latest/download"
 		fi
 	fi
-	asset_url="${download_base%/}/shimamura-telemetry-linux-$arch"
+	asset="shimamura-telemetry-linux-$arch"
+	asset_url="${download_base%/}/$asset"
 	log "downloading $asset_url"
 	download "$asset_url" "$tmp_bin" || die "failed to download $asset_url (use --binary or --download-base)"
+
+	# リリースに添付した checksums.txt（sha256sum の出力）と照合する
+	download "${download_base%/}/checksums.txt" "$tmp_sums" ||
+		die "failed to download ${download_base%/}/checksums.txt"
+	expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp_sums")"
+	actual="$(sha256sum "$tmp_bin" | awk '{ print $1 }')"
+	if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+		die "checksum mismatch for $asset (expected ${expected:-none}, got $actual)"
+	fi
 fi
 chmod 0755 "$tmp_bin"
 "$tmp_bin" version >/dev/null 2>&1 || die "the binary does not run on this machine (linux/$arch)"
