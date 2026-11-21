@@ -101,10 +101,12 @@ type Reporter struct {
 	// inflight は error が返ってこないかを待っているメッセージ。
 	inflight *inflight
 
-	lastSessions       []Session
-	lastSessionsAt     time.Time
-	lastSentAt         time.Time
-	readFailed         bool
+	lastSessions   []Session
+	lastSessionsAt time.Time
+	lastSentAt     time.Time
+	// readFailed はファイル（"utmp"・"wtmp"）ごとに、前回の読み取りが失敗したか。
+	// 片方だけが読めない場合に、もう片方の成功で「回復した」と誤ってログに出さないよう分けて持つ。
+	readFailed         map[string]bool
 	retriesExhaustedAt time.Time
 }
 
@@ -194,19 +196,23 @@ func sessionEqual(a, b Session) bool {
 		(a.Host == nil) == (b.Host == nil) && (a.Host == nil || *a.Host == *b.Host)
 }
 
-// logReadError は読み取りのエラーをログに出し、エラーなら true を返す。同じログは繰り返さない。
+// logReadError は読み取りのエラーをログに出し、エラーなら true を返す。
+// ファイルごとに、失敗し始めたとき・回復したときだけログに出す。
 func (r *Reporter) logReadError(what string, err error) bool {
+	if r.readFailed == nil {
+		r.readFailed = map[string]bool{}
+	}
 	if err == nil {
-		if r.readFailed {
-			r.logger.Info("reading login records recovered")
+		if r.readFailed[what] {
+			r.logger.Info("reading login records recovered", "file", what)
 		}
-		r.readFailed = false
+		r.readFailed[what] = false
 		return false
 	}
-	if !r.readFailed {
+	if !r.readFailed[what] {
 		r.logger.Warn("failed to read login records", "file", what, "error", err)
 	}
-	r.readFailed = true
+	r.readFailed[what] = true
 	return true
 }
 

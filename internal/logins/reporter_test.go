@@ -44,19 +44,30 @@ type fakeSource struct {
 	newEvents []Event
 	since     time.Time
 	err       error
+	// wtmpErr は wtmp（Backlog・NewEvents）だけのエラー。
+	wtmpErr error
 }
 
 func (s *fakeSource) Sessions() ([]Session, error) { return s.sessions, s.err }
 
 func (s *fakeSource) Backlog(since time.Time) ([]Event, error) {
 	s.since = since
-	return s.backlog, s.err
+	return s.backlog, cmpErr(s.wtmpErr, s.err)
 }
 
 func (s *fakeSource) NewEvents() ([]Event, error) {
 	e := s.newEvents
 	s.newEvents = nil
-	return e, s.err
+	return e, cmpErr(s.wtmpErr, s.err)
+}
+
+func cmpErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type testReporter struct {
@@ -268,7 +279,8 @@ func TestReporterReadErrorIsLoggedOnce(t *testing.T) {
 	for range 5 {
 		tr.tick(2 * time.Second)
 	}
-	if n := strings.Count(tr.logs.String(), "failed to read login records"); n != 1 {
+	// utmp と wtmp でそれぞれ 1 回だけ
+	if n := strings.Count(tr.logs.String(), "failed to read login records"); n != 2 {
 		t.Errorf("logged %d times", n)
 	}
 	if len(tr.conn.sent) != 0 {
@@ -304,5 +316,34 @@ func TestFitSessions(t *testing.T) {
 	// 新しいログインを残す
 	if last := msg.Sessions[len(msg.Sessions)-1].LoginAt; last != MaxSessions {
 		t.Errorf("last loginAt = %d", last)
+	}
+}
+
+// utmp は読めて wtmp だけ読めない場合でも、wtmp のエラーを毎回ログに出さない（utmp の成功で回復扱いにしない）。
+func TestReporterReadErrorPerFile(t *testing.T) {
+	tr := newTestReporter()
+	tr.conn.id = 1
+	tr.src.sessions = []Session{}
+	tr.src.wtmpErr = errors.New("permission denied")
+	for range 10 {
+		tr.tick(2 * time.Second)
+	}
+	logs := tr.logs.String()
+	if n := strings.Count(logs, "failed to read login records"); n != 1 {
+		t.Errorf("warned %d times:\n%s", n, logs)
+	}
+	if strings.Contains(logs, "recovered") {
+		t.Errorf("logged a false recovery:\n%s", logs)
+	}
+	// utmp は読めているので sessions は送る
+	if got := strings.Join(tr.types(), ","); got != "sessions" {
+		t.Errorf("sent = %v", tr.types())
+	}
+
+	// wtmp が読めるようになったら、wtmp の回復だけをログに出す
+	tr.src.wtmpErr = nil
+	tr.tick(2 * time.Second)
+	if n := strings.Count(tr.logs.String(), `msg="reading login records recovered" file=wtmp`); n != 1 {
+		t.Errorf("recovery logged %d times:\n%s", n, tr.logs.String())
 	}
 }
