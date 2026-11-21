@@ -100,3 +100,35 @@ interval_seconds = 5
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
+
+// install.sh が既存の設定ファイルの値を読むのに使う。コメント・リテラル文字列など TOML として正しい書き方を読めること。
+func TestRunCheckConfigGet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `server_id = 's-1' # literal string
+agent_token = "sat_abc"
+url    =   "wss://example.com/agent/connect"   # trailing comment
+interval = "30s" # custom cadence
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"server_id":   "s-1",
+		"agent_token": "sat_abc",
+		"url":         "wss://example.com/agent/connect",
+		"interval":    "30s",
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"check-config", "-config", path, "-get", key}, &stdout, &stderr); code != 0 {
+			t.Fatalf("%s: exit code = %d, stderr = %s", key, code, stderr.String())
+		}
+		if got := strings.TrimSpace(stdout.String()); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"check-config", "-config", path, "-get", "nope"}, &stdout, &stderr); code != 2 {
+		t.Errorf("unknown key: exit code = %d, want 2", code)
+	}
+}

@@ -152,26 +152,6 @@ aarch64 | arm64) arch="arm64" ;;
 *) die "unsupported architecture: $(uname -m) (supported: x86_64, aarch64)" ;;
 esac
 
-# ---- 設定ファイル ----
-
-# 既存の設定ファイルから key = "value" の値を読む
-existing_value() {
-	[ -f "$CONFIG_PATH" ] || return 0
-	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\\(.*\\)\"[[:space:]]*\$/\\1/p" "$CONFIG_PATH" | tail -n 1
-}
-
-[ -n "$server_id" ] || server_id="$(existing_value server_id)"
-[ -n "$token" ] || token="$(existing_value agent_token)"
-[ -n "$url" ] || url="$(existing_value url)"
-[ -n "$interval" ] || interval="$(existing_value interval)"
-[ -n "$interval" ] || interval="$DEFAULT_INTERVAL"
-
-missing=""
-[ -n "$server_id" ] || missing="$missing --server-id"
-[ -n "$token" ] || missing="$missing --token"
-[ -n "$url" ] || missing="$missing --url"
-[ -z "$missing" ] || die "missing required options:$missing (needed for the first installation)"
-
 # 一時ファイルは置き換え先と同じディレクトリに作り、検証してから mv で置き換える（途中で失敗しても壊さない）
 umask 077
 install -d -m 0700 -o root -g root "$CONFIG_DIR"
@@ -185,18 +165,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
-cat >"$tmp_config" <<EOF
-# shimamura-telemetry の設定ファイル（install.sh が書き出した）。
-# エージェントトークンを含むため、root だけが読めるようにしておくこと（0600）。
-
-server_id = "$server_id"
-agent_token = "$token"
-url = "$url"
-interval = "$interval"
-EOF
-chmod 0600 "$tmp_config"
-
 # ---- バイナリ ----
+# 既存の設定ファイルを TOML として読むのにも使うため、先に用意する
 
 download() {
 	if command -v curl >/dev/null 2>&1; then
@@ -225,6 +195,55 @@ else
 fi
 chmod 0755 "$tmp_bin"
 "$tmp_bin" version >/dev/null 2>&1 || die "the binary does not run on this machine (linux/$arch)"
+
+# ---- 設定ファイル ----
+
+# 省略した項目は既存の設定ファイルの値を使う。コメントや引用符の違いなど TOML として正しい書き方を
+# 取りこぼさないよう、新しいバイナリ（エージェントと同じ TOML のパーサー）で読む
+existing_value() {
+	"$tmp_bin" check-config --config "$CONFIG_PATH" -get "$1" 2>/dev/null
+}
+existing_error=""
+if [ -f "$CONFIG_PATH" ]; then
+	if existing_error="$("$tmp_bin" check-config --config "$CONFIG_PATH" 2>&1 >/dev/null)"; then
+		existing_error=""
+		[ -n "$server_id" ] || server_id="$(existing_value server_id)"
+		[ -n "$token" ] || token="$(existing_value agent_token)"
+		[ -n "$url" ] || url="$(existing_value url)"
+		[ -n "$interval" ] || interval="$(existing_value interval)"
+	elif [ -z "$existing_error" ]; then
+		existing_error="failed to read $CONFIG_PATH"
+	fi
+fi
+[ -n "$interval" ] || interval="$DEFAULT_INTERVAL"
+
+missing=""
+[ -n "$server_id" ] || missing="$missing --server-id"
+[ -n "$token" ] || missing="$missing --token"
+[ -n "$url" ] || missing="$missing --url"
+if [ -n "$missing" ]; then
+	if [ -n "$existing_error" ]; then
+		die "missing required options:$missing (the existing configuration could not be used: $existing_error)"
+	fi
+	die "missing required options:$missing (needed for the first installation)"
+fi
+
+# 既存の設定ファイルから読んだ値も、TOML の基本文字列として書けるか確かめる
+check_plain server_id "$server_id"
+check_plain agent_token "$token"
+check_plain url "$url"
+check_plain interval "$interval"
+
+cat >"$tmp_config" <<EOF
+# shimamura-telemetry の設定ファイル（install.sh が書き出した）。
+# エージェントトークンを含むため、root だけが読めるようにしておくこと（0600）。
+
+server_id = "$server_id"
+agent_token = "$token"
+url = "$url"
+interval = "$interval"
+EOF
+chmod 0600 "$tmp_config"
 
 # 新しいバイナリで新しい設定ファイルを検証する
 "$tmp_bin" check-config --config "$tmp_config" >/dev/null || die "invalid configuration"

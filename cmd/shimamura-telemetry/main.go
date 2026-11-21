@@ -65,20 +65,38 @@ func runCheckConfig(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("check-config", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", config.DefaultPath, "設定ファイルのパス")
+	get := fs.String("get", "", "検証した上で、指定した項目（server_id・agent_token・url・interval）の値だけを表示する")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	if _, err := config.Load(*configPath); err != nil {
+	cfg, err := config.Load(*configPath)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	if err := config.CheckPermissions(*configPath); err != nil {
 		_, _ = fmt.Fprintln(stderr, "warning:", err)
 	}
-	_, _ = fmt.Fprintf(stdout, "%s: ok\n", *configPath)
+	if *get == "" {
+		_, _ = fmt.Fprintf(stdout, "%s: ok\n", *configPath)
+		return 0
+	}
+	// install.sh が、省略されたオプションを既存の設定ファイルの値で補うために使う
+	values := map[string]string{
+		"server_id":   cfg.ServerID,
+		"agent_token": cfg.AgentToken,
+		"url":         cfg.URL,
+		"interval":    cfg.Interval.String(),
+	}
+	value, ok := values[*get]
+	if !ok {
+		_, _ = fmt.Fprintf(stderr, "unknown key: %s\n", *get)
+		return 2
+	}
+	_, _ = fmt.Fprintln(stdout, value)
 	return 0
 }
 
