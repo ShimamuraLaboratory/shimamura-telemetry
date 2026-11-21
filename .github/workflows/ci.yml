@@ -23,6 +23,8 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.5.0
+      # ubuntu-latest には shellcheck が入っている
+      - run: shellcheck install.sh
 
   test:
     runs-on: ubuntu-latest

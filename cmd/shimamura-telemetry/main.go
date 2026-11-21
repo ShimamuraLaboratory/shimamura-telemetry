@@ -23,9 +23,10 @@ import (
 const usage = `Usage: shimamura-telemetry <command> [options]
 
 Commands:
-  run       エージェントを起動する
-  collect   リソース情報を 1 回収集して JSON で表示する (動作確認用)
-  version   バージョンを表示する
+  run            エージェントを起動する
+  collect        リソース情報を 1 回収集して JSON で表示する (動作確認用)
+  check-config   設定ファイルを検証する
+  version        バージョンを表示する
 
 Run 'shimamura-telemetry run -h' for run options.
 `
@@ -45,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAgent(args[1:], stderr)
 	case "collect":
 		return runCollect(stdout, stderr)
+	case "check-config":
+		return runCheckConfig(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
@@ -55,6 +58,46 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "unknown command: %s\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+// runCheckConfig は設定ファイルを読み込んで検証する。install.sh が新しい設定を配置する前に使う。
+func runCheckConfig(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("check-config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", config.DefaultPath, "設定ファイルのパス")
+	get := fs.String("get", "", "検証した上で、指定した項目（server_id・agent_token・url・interval）の値だけを表示する")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if err := config.CheckPermissions(*configPath); err != nil {
+		_, _ = fmt.Fprintln(stderr, "warning:", err)
+	}
+	if *get == "" {
+		_, _ = fmt.Fprintf(stdout, "%s: ok\n", *configPath)
+		return 0
+	}
+	// install.sh が、省略されたオプションを既存の設定ファイルの値で補うために使う
+	values := map[string]string{
+		"server_id":   cfg.ServerID,
+		"agent_token": cfg.AgentToken,
+		"url":         cfg.URL,
+		"interval":    cfg.Interval.String(),
+	}
+	value, ok := values[*get]
+	if !ok {
+		_, _ = fmt.Fprintf(stderr, "unknown key: %s\n", *get)
+		return 2
+	}
+	_, _ = fmt.Fprintln(stdout, value)
+	return 0
 }
 
 // runCollect はリソース情報を 1 回収集し、送信メッセージの measuredAt・metrics と同じ形で表示する。

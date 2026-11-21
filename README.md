@@ -13,7 +13,8 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 
 > [!NOTE]
 > 現在は開発中です。CPU・メモリ・SSD・プロセス（gopsutil）・GPU（nvidia-smi）の収集と、監視 Worker への送信（WebSocket）は実装済みです。
-> インストールスクリプト（Issue #6）とリリース（Issue #7）は未実装です。
+> リリース（バイナリの配布、Issue #7）は未実装のため、`install.sh` の既定の取得元（GitHub Releases）からはまだダウンロードできません。
+> それまでは `--binary` で手元のバイナリを指定してインストールしてください。
 
 ## 必要なもの
 
@@ -54,6 +55,46 @@ make lint
 ./bin/shimamura-telemetry run --config /etc/shimamura-telemetry/config.toml
 ```
 
+## インストール
+
+計算機サーバーで [`install.sh`](install.sh) を root として実行すると、次をまとめて行います。
+
+- バイナリを `/usr/local/bin/shimamura-telemetry` に配置する（x86_64 / aarch64 を判定）
+- 設定ファイル `/etc/shimamura-telemetry/config.toml` を書き出す（ディレクトリ 0700・ファイル 0600）
+- systemd unit `shimamura-telemetry.service` を配置し、`enable` して起動する（再起動後も自動で起動する）
+
+サーバー ID・エージェントトークン・接続先は、IdP の管理画面のサーバー詳細に表示されるインストールコマンドに埋め込まれています。
+
+```bash
+curl -fsSL <install.sh の URL> | sudo sh -s -- \
+  --server-id <サーバー ID> --token <エージェントトークン> --url wss://<監視 Worker>/agent/connect
+
+# リリース前は、手元でビルドしたバイナリを指定する
+sudo sh install.sh --binary ./shimamura-telemetry-linux-amd64 \
+  --server-id <サーバー ID> --token <エージェントトークン> --url wss://<監視 Worker>/agent/connect
+```
+
+- 何度実行しても壊れません。2 回目以降は渡した項目だけ設定を書き換え（省略した項目は今の値のまま）、バイナリと unit を更新して再起動します
+- 新しいバイナリで新しい設定を検証（`shimamura-telemetry check-config`）してから置き換えるため、途中で失敗しても今の設定・バイナリは残ります
+- トークンをプロセス一覧に出したくない場合は、`--token` の代わりに環境変数 `SHIMAMURA_TELEMETRY_TOKEN` で渡せます
+- 起動後 3 秒経っても動いていなければ、直近のログを表示して失敗します
+- その他のオプションは `sh install.sh --help` を参照してください（`--interval`・`--version`・`--download-base` など）
+
+トークンを再発行した場合は、設定ファイルの `agent_token` を書き換えて再起動します（IdP の管理画面に表示されるコマンド）。
+
+```bash
+sudo sed -i 's/^agent_token = .*/agent_token = "<新しいトークン>"/' /etc/shimamura-telemetry/config.toml
+sudo systemctl restart shimamura-telemetry
+```
+
+アンインストールすると、サービスを止めてバイナリ・unit・設定ファイルを削除します。
+
+```bash
+sudo sh install.sh --uninstall
+```
+
+ログは `journalctl -u shimamura-telemetry -f` で見られます。
+
 ## 設定
 
 設定ファイルは TOML で、既定の場所は `/etc/shimamura-telemetry/config.toml` です。
@@ -76,7 +117,8 @@ sudo install -m 0600 -o root -g root deploy/config.example.toml /etc/shimamura-t
 
 ## systemd での運用
 
-unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/systemd/shimamura-telemetry.service) にあります。
+unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/systemd/shimamura-telemetry.service) にあります
+（`install.sh` に同じ内容を埋め込んでいます。変更するときは両方を直してください。一致することはテストで確認しています）。
 他ユーザーのプロセス情報や GPU を読むため root で動かし、その代わりにハードニングの設定で権限を絞っています。
 
 ### プロセスについて
@@ -120,18 +162,19 @@ sudo systemctl enable --now shimamura-telemetry.service
 ```
 .
 ├── cmd/
-│   └── shimamura-telemetry/   # CLI のエントリポイント（run / version サブコマンド）
+│   └── shimamura-telemetry/   # CLI のエントリポイント（run / collect / check-config / version）
 ├── internal/
 │   ├── agent/                 # 収集と送信を一定間隔で繰り返すループ
 │   ├── collector/             # リソース情報の収集処理（CPU・メモリ・SSD は gopsutil）
 │   ├── config/                # 設定ファイルの読み込みと検証
 │   ├── transport/             # 監視 Worker への送信処理（WebSocket・再接続）
 │   └── version/               # ビルド時に埋め込むバージョン情報
+├── install.sh                 # インストール・アンインストール用のスクリプト
 ├── deploy/
 │   ├── config.example.toml    # 設定ファイルの例
 │   └── systemd/
 │       └── shimamura-telemetry.service
-├── .github/workflows/ci.yml   # CI（golangci-lint、go test、linux/amd64・arm64 のビルド）
+├── .github/workflows/ci.yml   # CI（golangci-lint、shellcheck、go test、linux/amd64・arm64 のビルド）
 ├── .golangci.yml
 └── Makefile
 ```
