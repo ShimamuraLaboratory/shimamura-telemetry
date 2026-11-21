@@ -103,13 +103,14 @@ shimamura-telemetry version
 特定のバージョンに上げる・戻す場合は `--version` を付けます（例: `curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh -s -- --version v0.1.0`）。
 
 インストールスクリプトを使わずに手で差し替える場合は、バイナリを置き換えてから再起動します。
+ダウンロードかチェックサムの照合に失敗したら、その先（差し替え・再起動）に進まないよう `&&` でつないでいます。
 
 ```bash
-curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/shimamura-telemetry-linux-amd64
-curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/checksums.txt
-sha256sum --check --ignore-missing checksums.txt
-sudo install -m 0755 shimamura-telemetry-linux-amd64 /usr/local/bin/shimamura-telemetry
-sudo systemctl restart shimamura-telemetry
+curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/shimamura-telemetry-linux-amd64 &&
+  curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/checksums.txt &&
+  sha256sum --check --ignore-missing checksums.txt &&
+  sudo install -m 0755 shimamura-telemetry-linux-amd64 /usr/local/bin/shimamura-telemetry &&
+  sudo systemctl restart shimamura-telemetry
 ```
 
 ## リリース
