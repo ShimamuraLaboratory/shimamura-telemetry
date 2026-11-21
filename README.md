@@ -11,10 +11,7 @@ Shimamura IdP の監視 Worker（Cloudflare Durable Objects）へ外向きの We
 - 仕様: shimamura-IdP の Issue #527（エージェント本体）、#526（メッセージ形式と監視 Worker）
 - メッセージ形式は shimamura-IdP の `pkg/schema/src/serverMonitor/messages.ts`（プロトコルバージョン 1）に従います
 
-> [!NOTE]
-> 現在は開発中です。CPU・メモリ・SSD・プロセス（gopsutil）・GPU（nvidia-smi）の収集と、監視 Worker への送信（WebSocket）は実装済みです。
-> リリース（バイナリの配布、Issue #7）は未実装のため、`install.sh` の既定の取得元（GitHub Releases）からはまだダウンロードできません。
-> それまでは `--binary` で手元のバイナリを指定してインストールしてください。
+バイナリとインストールスクリプトは [GitHub Releases](https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases) で配布しています。
 
 ## 必要なもの
 
@@ -66,13 +63,12 @@ make lint
 サーバー ID・エージェントトークン・接続先は、IdP の管理画面のサーバー詳細に表示されるインストールコマンドに埋め込まれています。
 
 ```bash
-curl -fsSL <install.sh の URL> | sudo sh -s -- \
-  --server-id <サーバー ID> --token <エージェントトークン> --url wss://<監視 Worker>/agent/connect
-
-# リリース前は、手元でビルドしたバイナリを指定する
-sudo sh install.sh --binary ./shimamura-telemetry-linux-amd64 \
+curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh -s -- \
   --server-id <サーバー ID> --token <エージェントトークン> --url wss://<監視 Worker>/agent/connect
 ```
+
+- 最新のリリースのバイナリをダウンロードし、リリースに添付した `checksums.txt`（SHA-256）と照合してからインストールします
+- 特定のバージョンを入れる場合は `--version v0.1.0` を、手元でビルドしたバイナリを入れる場合は `--binary <パス>` を付けます
 
 - 何度実行しても壊れません。2 回目以降は渡した項目だけ設定を書き換え（省略した項目は今の値のまま）、バイナリと unit を更新して再起動します
 - 新しいバイナリで新しい設定を検証（`shimamura-telemetry check-config`）してから置き換えるため、途中で失敗しても今の設定・バイナリは残ります
@@ -94,6 +90,42 @@ sudo sh install.sh --uninstall
 ```
 
 ログは `journalctl -u shimamura-telemetry -f` で見られます。
+
+## アップデート
+
+インストールスクリプトを引数なしで実行し直すと、最新のリリースのバイナリに差し替えて再起動します（設定はそのまま）。
+
+```bash
+curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh
+shimamura-telemetry version
+```
+
+特定のバージョンに上げる・戻す場合は `--version` を付けます（例: `curl -fsSL https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/install.sh | sudo sh -s -- --version v0.1.0`）。
+
+インストールスクリプトを使わずに手で差し替える場合は、バイナリを置き換えてから再起動します。
+ダウンロードかチェックサムの照合に失敗したら、その先（差し替え・再起動）に進まないよう `&&` でつないでいます。
+
+```bash
+curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/shimamura-telemetry-linux-amd64 &&
+  curl -fsSLO https://github.com/ShimamuraLaboratory/shimamura-telemetry/releases/latest/download/checksums.txt &&
+  sha256sum --check --ignore-missing checksums.txt &&
+  sudo install -m 0755 shimamura-telemetry-linux-amd64 /usr/local/bin/shimamura-telemetry &&
+  sudo systemctl restart shimamura-telemetry
+```
+
+## リリース
+
+`v` から始まるタグ（例: `v0.1.0`）を push すると、[`.github/workflows/release.yml`](.github/workflows/release.yml) がテストとビルドを行い、
+次を添付したリリースを作ります。`-` を含むタグ（例: `v0.2.0-rc.1`）は pre-release になり、`latest` には含まれません。
+
+- `shimamura-telemetry-linux-amd64`・`shimamura-telemetry-linux-arm64`（`shimamura-telemetry version` にタグが入る）
+- `checksums.txt`（上の SHA-256）
+- `install.sh`
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## 設定
 
@@ -174,7 +206,9 @@ sudo systemctl enable --now shimamura-telemetry.service
 │   ├── config.example.toml    # 設定ファイルの例
 │   └── systemd/
 │       └── shimamura-telemetry.service
-├── .github/workflows/ci.yml   # CI（golangci-lint、shellcheck、go test、linux/amd64・arm64 のビルド）
+├── .github/workflows/
+│   ├── ci.yml                 # CI（golangci-lint、shellcheck、go test、linux/amd64・arm64 のビルド）
+│   └── release.yml            # タグの push でリリースを作る
 ├── .golangci.yml
 └── Makefile
 ```
