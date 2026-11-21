@@ -166,6 +166,19 @@ unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/syste
 コマンド名は Linux では 15 文字で切り詰められるため、その場合は実行ファイル名を使います。
 ユーザー名は `/etc/passwd` で引けない場合（LDAP・SSSD など）は `getent passwd` で引き、それでも引けなければ UID を送ります。
 
+### ログイン履歴について
+
+IdP のサーバー詳細でログイン履歴と現在のログインユーザーを表示するため（shimamura-IdP #531）、Linux では ssh などのログイン情報を読み、
+メトリクスと同じ接続で別のメッセージとして送ります。Unix アカウントは使用者間で共有しているため、IdP のユーザーは監視 Worker が
+Cloudflare Access の認証ログとの時刻の近さで推定します。エージェントが送るのは Unix ユーザー名・端末・接続元・時刻だけです。
+
+- `sessions`: 現在ログイン中のユーザー（`/var/run/utmp`）。接続直後・変化があったとき、変化が無くても 5 分ごとに送ります
+- `login_events`: ログイン・ログアウト（`/var/log/wtmp`）。新しいものを送り、接続直後は直近 24 時間分を送り直します（監視 Worker 側で重複をまとめます）
+- メッセージの間隔は 1.5 秒以上あけ、監視 Worker が `error` を返したら送り直します（3 回まで）
+- utmp のレコードの形は x86_64（384 バイト）と aarch64（400 バイト）で違うため、それぞれに対応しています
+
+送る内容は `shimamura-telemetry logins` で確認できます。
+
 ### 監視 Worker との接続
 
 - 設定ファイルの `url`（例: `wss://idp-monitor.example.com/agent/connect`）へ、`Authorization: Bearer <agent_token>` を付けて WebSocket で接続します
@@ -194,11 +207,12 @@ sudo systemctl enable --now shimamura-telemetry.service
 ```
 .
 ├── cmd/
-│   └── shimamura-telemetry/   # CLI のエントリポイント（run / collect / check-config / version）
+│   └── shimamura-telemetry/   # CLI のエントリポイント（run / collect / logins / check-config / version）
 ├── internal/
 │   ├── agent/                 # 収集と送信を一定間隔で繰り返すループ
 │   ├── collector/             # リソース情報の収集処理（CPU・メモリ・SSD は gopsutil）
 │   ├── config/                # 設定ファイルの読み込みと検証
+│   ├── logins/                # ログイン履歴（utmp / wtmp）の収集と送信
 │   ├── transport/             # 監視 Worker への送信処理（WebSocket・再接続）
 │   └── version/               # ビルド時に埋め込むバージョン情報
 ├── install.sh                 # インストール・アンインストール用のスクリプト

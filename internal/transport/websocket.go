@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -91,6 +92,10 @@ type WebSocket struct {
 	// authFailed は前回の接続が認証の失敗で終わったか。同じログを繰り返し出さないために使う。
 	authFailed bool
 	closed     bool
+	// connSeq は接続した回数。接続ごとの番号（ConnectionID）に使う。
+	connSeq uint64
+	// errorCount は監視 Worker から受け取った error メッセージの数。
+	errorCount atomic.Uint64
 }
 
 var _ Sender = (*WebSocket)(nil)
@@ -98,6 +103,7 @@ var _ Sender = (*WebSocket)(nil)
 // connection は 1 本の WebSocket 接続。
 type connection struct {
 	ws          *websocket.Conn
+	id          uint64
 	connectedAt time.Time
 	// done は読み込みが終わった（接続が切れた）ときに閉じる。err はその理由、closedAt はその時刻。
 	// 再接続までの待ち時間は、次の Send で気付いた時刻ではなく closedAt から数える。
@@ -127,12 +133,44 @@ func NewWebSocket(endpoint, token string, logger *slog.Logger) *WebSocket {
 // Send はスナップショットを 1 件送る。接続していなければ接続してから送る。
 // 再接続を待っている間は ErrNotConnected を返す。
 func (w *WebSocket) Send(ctx context.Context, snapshot *collector.Snapshot) error {
-	data, err := json.Marshal(metricsMessage{
+	return w.send(ctx, metricsMessage{
 		V:          ProtocolVersion,
 		Type:       "metrics",
 		MeasuredAt: snapshot.CollectedAt.UnixMilli(),
 		Metrics:    snapshot.Metrics,
-	})
+	}, true)
+}
+
+// SendIfConnected は接続している場合だけ v を JSON で送る。接続していなければ接続はせずに ErrNotConnected を返す。
+// ログイン関連のメッセージなど、メトリクス以外を送るのに使う（接続・再接続はメトリクスの送信が担う）。
+func (w *WebSocket) SendIfConnected(ctx context.Context, v any) error {
+	return w.send(ctx, v, false)
+}
+
+// ConnectionID は今の接続の番号を返す。接続していなければ 0。接続し直すたびに変わる。
+func (w *WebSocket) ConnectionID() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.conn == nil {
+		return 0
+	}
+	select {
+	case <-w.conn.done:
+		return 0
+	default:
+		return w.conn.id
+	}
+}
+
+// ErrorCount は監視 Worker から受け取った error メッセージの数を返す。
+// 監視 Worker は受け付けたメッセージに応答しないため、送ったメッセージが拒否されたかはこれが増えたかで分かる。
+func (w *WebSocket) ErrorCount() uint64 {
+	return w.errorCount.Load()
+}
+
+// send は v を JSON で送る。dial が true なら、接続していなければ接続してから送る。
+func (w *WebSocket) send(ctx context.Context, v any, dial bool) error {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("encode message: %w", err)
 	}
@@ -154,6 +192,9 @@ func (w *WebSocket) Send(ctx context.Context, snapshot *collector.Snapshot) erro
 		}
 	}
 	if w.conn == nil {
+		if !dial {
+			return ErrNotConnected
+		}
 		if err := w.connect(ctx); err != nil {
 			return err
 		}
@@ -235,7 +276,8 @@ func (w *WebSocket) connect(ctx context.Context) error {
 	}
 
 	w.authFailed = false
-	c := &connection{ws: ws, connectedAt: w.now(), done: make(chan struct{})}
+	w.connSeq++
+	c := &connection{ws: ws, id: w.connSeq, connectedAt: w.now(), done: make(chan struct{})}
 	w.conn = c
 	go w.readLoop(c)
 	w.logger.Info("connected to the monitor", "url", w.url)
@@ -258,6 +300,7 @@ func (w *WebSocket) readLoop(c *connection) {
 			continue
 		}
 		if msg.Type == "error" {
+			w.errorCount.Add(1)
 			w.logger.Warn("the monitor rejected a message", "message", msg.Message)
 		}
 	}
