@@ -2,13 +2,13 @@
 # /etc/shimamura-telemetry/config.toml に置き、パーミッションは 0600（root:root）にすること。
 
 # IdP の管理画面で登録した計算機サーバーの ID
-server_id = "calc-01"
+server_id = "00000000-0000-0000-0000-000000000000"
 
 # 監視 Worker へ接続するためのエージェントトークン（秘密情報）
-agent_token = "REPLACE_ME"
+agent_token = "sat_REPLACE_ME"
 
 # 監視 Worker の WebSocket エンドポイント
-url = "wss://telemetry.example.com/agent"
+url = "wss://idp-monitor.example.com/agent/connect"
 
 # 収集・送信の間隔（省略時は 5s、1s 以上）
 interval = "5s"

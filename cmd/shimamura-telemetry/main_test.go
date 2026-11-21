@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,5 +59,44 @@ func TestRunCollect(t *testing.T) {
 	}
 	if got.MeasuredAt <= 0 || got.Metrics.CPU == nil || got.Metrics.Memory == nil || got.Metrics.GPUs == nil {
 		t.Errorf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestRunCheckConfig(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	valid := write("valid.toml", `server_id = "s"
+agent_token = "t"
+url = "wss://example.com/agent/connect"
+`)
+	// IdP の古いテンプレートの形式（キー名が違う）
+	unknown := write("unknown.toml", `server_id = "s"
+token = "t"
+endpoint = "wss://example.com/agent/connect"
+interval_seconds = 5
+`)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"check-config", "-config", valid}, &stdout, &stderr); code != 0 {
+		t.Fatalf("valid: exit code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ok") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"check-config", "-config", unknown}, &stdout, &stderr); code != 1 {
+		t.Errorf("unknown keys: exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "unknown keys") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }
