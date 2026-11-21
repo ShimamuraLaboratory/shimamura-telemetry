@@ -522,3 +522,66 @@ func TestNewWebSocketWarnsWithoutTLS(t *testing.T) {
 		}
 	}
 }
+
+// ログイン関連のメッセージは、接続している場合だけ送る（接続はメトリクスの送信が担う）。
+func TestWebSocketSendIfConnected(t *testing.T) {
+	m := newFakeMonitor(t)
+	w, clock, _ := newTestSender(t, m.url(), testToken)
+
+	if id := w.ConnectionID(); id != 0 {
+		t.Fatalf("ConnectionID before connecting = %d", id)
+	}
+	if err := w.SendIfConnected(t.Context(), map[string]any{"type": "sessions"}); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("err = %v, want ErrNotConnected", err)
+	}
+	if n := m.dialCount(); n != 0 {
+		t.Fatalf("SendIfConnected dialed: %d", n)
+	}
+
+	if err := w.Send(t.Context(), testSnapshot(clock.Now())); err != nil {
+		t.Fatal(err)
+	}
+	m.nextMessage(t)
+	first := w.ConnectionID()
+	if first == 0 {
+		t.Fatal("ConnectionID = 0 after connecting")
+	}
+	if err := w.SendIfConnected(t.Context(), map[string]any{"v": 1, "type": "sessions"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-m.received:
+		if !strings.Contains(string(data), `"type":"sessions"`) {
+			t.Errorf("received %s", data)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no message")
+	}
+
+	// 監視 Worker が error を返すと数が増える
+	conn := m.nextConn(t)
+	if err := conn.Write(t.Context(), websocket.MessageText, []byte(`{"v":1,"type":"error","message":"送信間隔が短すぎます"}`)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for w.ErrorCount() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("ErrorCount = %d", w.ErrorCount())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 切れたら 0、接続し直すと別の番号になる
+	_ = conn.Close(websocket.StatusServiceRestart, "restarting")
+	waitDisconnected(t, w)
+	if id := w.ConnectionID(); id != 0 {
+		t.Errorf("ConnectionID after disconnect = %d", id)
+	}
+	clock.Advance(backoffBase)
+	if err := w.Send(t.Context(), testSnapshot(clock.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if id := w.ConnectionID(); id == 0 || id == first {
+		t.Errorf("ConnectionID after reconnect = %d (first %d)", id, first)
+	}
+}
