@@ -298,7 +298,11 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
-ProtectClock=yes
+# ProtectClock=yes は使わない。systemd 249（Ubuntu 22.04）などでは DeviceAllow=char-rtc r を暗黙に加え、
+# それ以外のデバイス（/dev/nvidia*）へのアクセスを塞ぐため、nvidia-smi が
+# 「Failed to initialize NVML: Unknown Error」で失敗する。代わりに、時計を変える権限とシステムコールだけを取り上げる。
+CapabilityBoundingSet=~CAP_SYS_TIME CAP_WAKE_ALARM
+SystemCallFilter=~@clock
 ProtectHostname=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
@@ -306,7 +310,7 @@ RestrictNamespaces=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
-# GPU の情報を読む nvidia-smi は /dev/nvidia* を使うため PrivateDevices は有効にしない。
+# GPU の情報を読む nvidia-smi は /dev/nvidia* を使うため、PrivateDevices や DeviceAllow でデバイスを絞らない。
 
 [Install]
 WantedBy=multi-user.target
