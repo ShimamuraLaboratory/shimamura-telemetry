@@ -47,6 +47,8 @@ type systemSource interface {
 	VirtualMemory(ctx context.Context) (*mem.VirtualMemoryStat, error)
 	Partitions(ctx context.Context) ([]disk.PartitionStat, error)
 	DiskUsage(ctx context.Context, path string) (*disk.UsageStat, error)
+	// CPUInfo は論理 CPU ごとの情報（/proc/cpuinfo）を読む。ハードウェア情報（Spec）で使う。
+	CPUInfo(ctx context.Context) ([]cpu.InfoStat, error)
 }
 
 // gopsutilSource は gopsutil で OS から読む systemSource。
@@ -65,6 +67,10 @@ func (gopsutilSource) Partitions(ctx context.Context) ([]disk.PartitionStat, err
 	return disk.PartitionsWithContext(ctx, false)
 }
 
+func (gopsutilSource) CPUInfo(ctx context.Context) ([]cpu.InfoStat, error) {
+	return cpu.InfoWithContext(ctx)
+}
+
 func (gopsutilSource) DiskUsage(ctx context.Context, path string) (*disk.UsageStat, error) {
 	return disk.UsageWithContext(ctx, path)
 }
@@ -78,10 +84,14 @@ type System struct {
 	logger          *slog.Logger
 	now             func() time.Time
 	firstSampleWait time.Duration
+	// sysRoot は sysfs の場所（CPU のトポロジーを読む）。テストで差し替えるために持つ。
+	sysRoot string
 
 	mu sync.Mutex
 	// gpuState は前回の GPU の読み取り結果。状態が変わったときだけログに出すために使う。
 	gpuState gpuState
+	// lastGPUSpec は前回 Spec で読めた GPU の一覧。nvidia-smi が一時的に失敗したときに使う。
+	lastGPUSpec []GPUSpec
 	// prevTotal・prevCores は前回の Collect で読んだ CPU の累積時間。初回は nil。
 	prevTotal *cpu.TimesStat
 	prevCores []cpu.TimesStat
@@ -101,6 +111,7 @@ func NewSystem(logger *slog.Logger) *System {
 		logger:          logger,
 		now:             time.Now,
 		firstSampleWait: defaultFirstSampleWait,
+		sysRoot:         "/sys",
 	}
 }
 

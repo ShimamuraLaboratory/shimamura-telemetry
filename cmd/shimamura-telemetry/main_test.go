@@ -132,3 +132,24 @@ interval = "30s" # custom cadence
 		t.Errorf("unknown key: exit code = %d, want 2", code)
 	}
 }
+
+func TestRunSpec(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"spec"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
+	}
+	var got struct {
+		CPU struct {
+			Threads int `json:"threads"`
+		} `json:"cpu"`
+		MemoryTotalBytes uint64 `json:"memoryTotalBytes"`
+		Disks            []any  `json:"disks"`
+		GPUs             []any  `json:"gpus"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, stdout.String())
+	}
+	if got.CPU.Threads <= 0 || got.MemoryTotalBytes == 0 || got.Disks == nil || got.GPUs == nil {
+		t.Errorf("unexpected output: %s", stdout.String())
+	}
+}

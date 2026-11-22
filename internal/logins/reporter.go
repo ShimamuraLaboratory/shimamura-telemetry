@@ -32,6 +32,10 @@ const (
 	maxRetries = 3
 )
 
+// GateHold は、この Reporter がメッセージを送った後に、同じ接続で送る他の送り手を待たせる時間
+// （transport.AckGate）。error を待つ時間に、error に気付くまでのポーリングの間隔を足したもの。
+const GateHold = ackWindow + pollInterval
+
 // Conn は監視 Worker との接続。transport.WebSocket が実装する。
 type Conn interface {
 	// ConnectionID は今の接続の番号を返す。接続していなければ 0。接続し直すたびに変わる。

@@ -20,6 +20,7 @@ import (
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/collector"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/config"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/logins"
+	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/spec"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/transport"
 	"github.com/ShimamuraLaboratory/shimamura-telemetry/internal/version"
 )
@@ -30,6 +31,7 @@ Commands:
   run            エージェントを起動する
   collect        リソース情報を 1 回収集して JSON で表示する (動作確認用)
   logins         ログイン中のユーザーと直近 24 時間のログイン・ログアウトを JSON で表示する (動作確認用)
+  spec           ハードウェア情報 (CPU・メモリ・SSD・GPU) を JSON で表示する (動作確認用)
   check-config   設定ファイルを検証する
   version        バージョンを表示する
 
@@ -55,6 +57,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCheckConfig(args[1:], stdout, stderr)
 	case "logins":
 		return runLogins(stdout, stderr)
+	case "spec":
+		return runSpec(stdout, stderr)
 	case "version", "--version", "-v":
 		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
@@ -165,13 +169,22 @@ func runAgent(args []string, stderr io.Writer) int {
 
 	sender := transport.NewWebSocket(cfg.URL, cfg.AgentToken, logger)
 
-	// ログイン履歴（utmp / wtmp）は Linux のみ。メトリクスと同じ接続で、別のメッセージとして送る
+	system := collector.NewSystem(logger)
+
+	// ハードウェア情報とログイン履歴（utmp / wtmp は Linux のみ）は、メトリクスと同じ接続で別のメッセージとして送る。
+	// 接続・再接続はメトリクスの送信が担い、これらは接続している間だけ送る
+	// 監視 Worker は error がどのメッセージへのものかを示さないため、2 つの送り手が error を取り違えないよう、
+	// 一方のメッセージが error を待っている間はもう一方に送らせない（AckGate）
 	var wg sync.WaitGroup
+	gate := transport.NewAckGate(sender)
+	specConn := gate.Client(spec.GateHold)
+	wg.Go(func() { spec.NewReporter(specConn, system, logger).Run(ctx) })
 	if src := loginSource(logger); src != nil {
-		wg.Go(func() { logins.NewReporter(sender, src, logger).Run(ctx) })
+		loginConn := gate.Client(logins.GateHold)
+		wg.Go(func() { logins.NewReporter(loginConn, src, logger).Run(ctx) })
 	}
 
-	err = agent.New(collector.NewSystem(logger), sender, cfg.Interval.Duration, logger).Run(ctx)
+	err = agent.New(system, sender, cfg.Interval.Duration, logger).Run(ctx)
 	wg.Wait()
 	if err != nil {
 		logger.Error("agent stopped", "error", err)
@@ -196,6 +209,25 @@ func loginSource(logger *slog.Logger) *logins.Source {
 		return nil
 	}
 	return src
+}
+
+// runSpec はハードウェア情報を、送るメッセージの spec と同じ形で表示する。
+func runSpec(stdout, stderr io.Writer) int {
+	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	s, err := collector.NewSystem(logger).Spec(ctx)
+	if err != nil {
+		logger.Error("failed to read the hardware spec", "error", err)
+		return 1
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(s); err != nil {
+		logger.Error("failed to encode", "error", err)
+		return 1
+	}
+	return 0
 }
 
 // runLogins は今のセッションと直近 24 時間のイベントを、送るメッセージの形で表示する。
