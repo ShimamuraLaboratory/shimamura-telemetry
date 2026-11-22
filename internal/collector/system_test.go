@@ -27,6 +27,9 @@ type fakeSource struct {
 	memory *mem.VirtualMemoryStat
 	memErr error
 
+	cpuInfo    []cpu.InfoStat
+	cpuInfoErr error
+
 	partitions []disk.PartitionStat
 	partErr    error
 	usage      map[string]*disk.UsageStat
@@ -52,6 +55,10 @@ func (f *fakeSource) VirtualMemory(context.Context) (*mem.VirtualMemoryStat, err
 
 func (f *fakeSource) Partitions(context.Context) ([]disk.PartitionStat, error) {
 	return f.partitions, f.partErr
+}
+
+func (f *fakeSource) CPUInfo(context.Context) ([]cpu.InfoStat, error) {
+	return f.cpuInfo, f.cpuInfoErr
 }
 
 func (f *fakeSource) DiskUsage(_ context.Context, path string) (*disk.UsageStat, error) {

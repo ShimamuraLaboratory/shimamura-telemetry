@@ -166,6 +166,18 @@ unit のひな形は [`deploy/systemd/shimamura-telemetry.service`](deploy/syste
 コマンド名は Linux では 15 文字で切り詰められるため、その場合は実行ファイル名を使います。
 ユーザー名は `/etc/passwd` で引けない場合（LDAP・SSSD など）は `getent passwd` で引き、それでも引けなければ UID を送ります。
 
+### ハードウェア情報について
+
+IdP の管理画面でサーバーを追加するときに手で入力していた CPU・メモリ容量・SSD 容量・GPU は、エージェントが送ります（`spec` メッセージ）。
+
+- 接続した直後（再接続のたびにも）送り、接続中は 1 時間ごとに取り直して、前回と違えば送ります
+- CPU: モデル名（`/proc/cpuinfo` の model name。取れなければ空文字）と、ソケット・物理コア・論理 CPU の数（sysfs のトポロジーから数える）
+- メモリ: 物理メモリの合計。SSD: メトリクスの `disks` と同じマウントポイントの容量。GPU: `nvidia-smi` で読んだ名前と VRAM の合計（無ければ空）
+- `nvidia-smi` が一時的に失敗した場合は、前回読めた GPU の一覧を送ります（「GPU なし」と送らないため）
+- 監視 Worker は 1 分より短い間隔の `spec` を受け付けないため、65 秒以上あけて送り、`error` が返ってきたら送り直します（3 回まで）
+
+送る内容は `shimamura-telemetry spec` で確認できます。
+
 ### ログイン履歴について
 
 IdP のサーバー詳細でログイン履歴と現在のログインユーザーを表示するため（shimamura-IdP #531）、Linux では ssh などのログイン情報を読み、
@@ -207,12 +219,13 @@ sudo systemctl enable --now shimamura-telemetry.service
 ```
 .
 ├── cmd/
-│   └── shimamura-telemetry/   # CLI のエントリポイント（run / collect / logins / check-config / version）
+│   └── shimamura-telemetry/   # CLI のエントリポイント（run / collect / spec / logins / check-config / version）
 ├── internal/
 │   ├── agent/                 # 収集と送信を一定間隔で繰り返すループ
 │   ├── collector/             # リソース情報の収集処理（CPU・メモリ・SSD は gopsutil）
 │   ├── config/                # 設定ファイルの読み込みと検証
 │   ├── logins/                # ログイン履歴（utmp / wtmp）の収集と送信
+│   ├── spec/                  # ハードウェア情報（spec メッセージ）の送信
 │   ├── transport/             # 監視 Worker への送信処理（WebSocket・再接続）
 │   └── version/               # ビルド時に埋め込むバージョン情報
 ├── install.sh                 # インストール・アンインストール用のスクリプト
