@@ -31,6 +31,10 @@ const (
 	maxRetries = 3
 )
 
+// GateHold は、この Reporter がメッセージを送った後に、同じ接続で送る他の送り手を待たせる時間
+// （transport.AckGate）。error を待つ時間に、error に気付くまでのポーリングの間隔を足したもの。
+const GateHold = ackWindow + pollInterval
+
 // Conn は監視 Worker との接続。transport.WebSocket が実装する。
 type Conn interface {
 	// ConnectionID は今の接続の番号を返す。接続していなければ 0。接続し直すたびに変わる。
@@ -182,7 +186,7 @@ func (r *Reporter) sendPending(ctx context.Context, now time.Time) {
 		return
 	}
 	spec := *r.pending
-	msg := message{V: protocolVersion, Type: "spec", CollectedAt: r.collectedAt.UnixMilli(), Spec: fit(spec)}
+	msg := fit(message{V: protocolVersion, Type: "spec", CollectedAt: r.collectedAt.UnixMilli(), Spec: spec})
 	errCount := r.conn.ErrorCount()
 	if err := r.conn.SendIfConnected(ctx, msg); err != nil {
 		if !errors.Is(err, context.Canceled) {
@@ -195,18 +199,18 @@ func (r *Reporter) sendPending(ctx context.Context, now time.Time) {
 	r.inflight = &inflight{spec: spec, sentAt: now, errorCount: errCount}
 }
 
-// fit はメッセージが 64 KB に収まるよう、ディスクを減らす（実際には数十件で収まる）。
-func fit(spec collector.Spec) collector.Spec {
-	for len(spec.Disks) > 0 {
-		b, err := json.Marshal(message{V: protocolVersion, Type: "spec", Spec: spec})
+// fit は送るメッセージ（collectedAt などを含めた全体）が 64 KB に収まるよう、ディスクを減らす（実際には数十件で収まる）。
+func fit(msg message) message {
+	for len(msg.Spec.Disks) > 0 {
+		b, err := json.Marshal(msg)
 		if err == nil && len(b) <= maxMessageBytes {
 			break
 		}
 		// 大きさに比例して減らす（1 件ずつ減らして毎回エンコードし直すと遅い）
-		n := len(spec.Disks) * maxMessageBytes / max(len(b), 1)
-		spec.Disks = spec.Disks[:min(n, len(spec.Disks)-1)]
+		n := len(msg.Spec.Disks) * maxMessageBytes / max(len(b), 1)
+		msg.Spec.Disks = msg.Spec.Disks[:min(n, len(msg.Spec.Disks)-1)]
 	}
-	return spec
+	return msg
 }
 
 // sameSpec は 2 つのハードウェア情報が同じかを返す。

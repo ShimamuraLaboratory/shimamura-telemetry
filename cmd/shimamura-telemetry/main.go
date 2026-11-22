@@ -173,10 +173,15 @@ func runAgent(args []string, stderr io.Writer) int {
 
 	// ハードウェア情報とログイン履歴（utmp / wtmp は Linux のみ）は、メトリクスと同じ接続で別のメッセージとして送る。
 	// 接続・再接続はメトリクスの送信が担い、これらは接続している間だけ送る
+	// 監視 Worker は error がどのメッセージへのものかを示さないため、2 つの送り手が error を取り違えないよう、
+	// 一方のメッセージが error を待っている間はもう一方に送らせない（AckGate）
 	var wg sync.WaitGroup
-	wg.Go(func() { spec.NewReporter(sender, system, logger).Run(ctx) })
+	gate := transport.NewAckGate(sender)
+	specConn := gate.Client(spec.GateHold)
+	wg.Go(func() { spec.NewReporter(specConn, system, logger).Run(ctx) })
 	if src := loginSource(logger); src != nil {
-		wg.Go(func() { logins.NewReporter(sender, src, logger).Run(ctx) })
+		loginConn := gate.Client(logins.GateHold)
+		wg.Go(func() { logins.NewReporter(loginConn, src, logger).Run(ctx) })
 	}
 
 	err = agent.New(system, sender, cfg.Interval.Duration, logger).Run(ctx)

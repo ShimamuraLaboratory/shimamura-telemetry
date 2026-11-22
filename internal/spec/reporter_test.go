@@ -210,10 +210,29 @@ func TestFitLimitsMessageSize(t *testing.T) {
 	for range 2000 {
 		s.Disks = append(s.Disks, collector.DiskSpec{Mount: "/" + strings.Repeat("m", 200), TotalBytes: 1})
 	}
-	got := fit(s)
-	b, _ := json.Marshal(message{V: 1, Type: "spec", Spec: got})
-	if len(b) > maxMessageBytes || len(got.Disks) == 0 {
-		t.Errorf("size = %d, disks = %d", len(b), len(got.Disks))
+	got := fit(message{V: 1, Type: "spec", CollectedAt: t0.UnixMilli(), Spec: s})
+	b, _ := json.Marshal(got)
+	if len(b) > maxMessageBytes || len(got.Spec.Disks) == 0 {
+		t.Errorf("size = %d, disks = %d", len(b), len(got.Spec.Disks))
+	}
+}
+
+// 大きさは、実際に送る collectedAt（13 桁）を含めて測る。0 で測ると収まっていても、送るときに上限を超えうる。
+func TestFitCountsTimestamp(t *testing.T) {
+	s := testSpec(1)
+	s.Disks = nil
+	// エスケープされる文字（"<" は \u003c の 6 バイトになる）で、上限ぎりぎりの大きさにする
+	mount := "/" + strings.Repeat("<", 254)
+	for range 64 {
+		s.Disks = append(s.Disks, collector.DiskSpec{Mount: mount, TotalBytes: 18446744073709551615})
+	}
+	msg := fit(message{V: 1, Type: "spec", CollectedAt: t0.UnixMilli(), Spec: s})
+	b, _ := json.Marshal(msg)
+	if len(b) > maxMessageBytes {
+		t.Errorf("message is %d bytes", len(b))
+	}
+	if msg.CollectedAt != t0.UnixMilli() {
+		t.Errorf("collectedAt = %d", msg.CollectedAt)
 	}
 }
 
