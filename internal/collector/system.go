@@ -16,6 +16,7 @@ import (
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/sensors"
 )
 
 // defaultFirstSampleWait は初回の Collect で CPU 使用率を求めるために、2 回目の計測までに待つ時間。
@@ -49,6 +50,8 @@ type systemSource interface {
 	DiskUsage(ctx context.Context, path string) (*disk.UsageStat, error)
 	// CPUInfo は論理 CPU ごとの情報（/proc/cpuinfo）を読む。ハードウェア情報（Spec）で使う。
 	CPUInfo(ctx context.Context) ([]cpu.InfoStat, error)
+	// Temperatures は温度センサー（/sys/class/hwmon）の値を読む。CPU の温度に使う。
+	Temperatures(ctx context.Context) ([]sensors.TemperatureStat, error)
 }
 
 // gopsutilSource は gopsutil で OS から読む systemSource。
@@ -65,6 +68,10 @@ func (gopsutilSource) VirtualMemory(ctx context.Context) (*mem.VirtualMemoryStat
 func (gopsutilSource) Partitions(ctx context.Context) ([]disk.PartitionStat, error) {
 	// all=false で、デバイスを持たない擬似ファイルシステム（proc・sysfs・cgroup など）を除く
 	return disk.PartitionsWithContext(ctx, false)
+}
+
+func (gopsutilSource) Temperatures(ctx context.Context) ([]sensors.TemperatureStat, error) {
+	return sensors.TemperaturesWithContext(ctx)
 }
 
 func (gopsutilSource) CPUInfo(ctx context.Context) ([]cpu.InfoStat, error) {
@@ -126,6 +133,7 @@ func (s *System) Collect(ctx context.Context) (*Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("collect cpu: %w", err)
 	}
+	cpuMetrics.TemperatureC = s.collectCPUTemperature(ctx)
 	memory, err := s.collectMemory(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("collect memory: %w", err)
@@ -173,6 +181,17 @@ func (s *System) collectProcesses(ctx context.Context, gpuMemory map[int32]uint6
 		return nil, nil
 	}
 	return processes, nil
+}
+
+// collectCPUTemperature は CPU の温度を読む。読めない・CPU のセンサーが無い（VM など）場合は nil。
+// 一部のセンサーが読めなくても（gopsutil は読めた分と警告を返す）、読めた分から選ぶ。
+func (s *System) collectCPUTemperature(ctx context.Context) *float64 {
+	stats, err := s.source.Temperatures(ctx)
+	if err != nil && len(stats) == 0 {
+		s.logger.Debug("failed to read temperature sensors", "error", err)
+		return nil
+	}
+	return cpuTemperature(stats)
 }
 
 // gpuState は GPU の読み取り結果の状態。

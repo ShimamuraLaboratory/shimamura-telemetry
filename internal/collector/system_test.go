@@ -14,6 +14,7 @@ import (
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/sensors"
 )
 
 // fakeSource は呼ばれるたびに cpuTotals・cpuCores を 1 つずつ進めて返す systemSource。
@@ -29,6 +30,8 @@ type fakeSource struct {
 
 	cpuInfo    []cpu.InfoStat
 	cpuInfoErr error
+	temps      []sensors.TemperatureStat
+	tempsErr   error
 
 	partitions []disk.PartitionStat
 	partErr    error
@@ -55,6 +58,10 @@ func (f *fakeSource) VirtualMemory(context.Context) (*mem.VirtualMemoryStat, err
 
 func (f *fakeSource) Partitions(context.Context) ([]disk.PartitionStat, error) {
 	return f.partitions, f.partErr
+}
+
+func (f *fakeSource) Temperatures(context.Context) ([]sensors.TemperatureStat, error) {
+	return f.temps, f.tempsErr
 }
 
 func (f *fakeSource) CPUInfo(context.Context) ([]cpu.InfoStat, error) {

@@ -44,6 +44,8 @@ type CPUMetrics struct {
 	UsagePercent float64 `json:"usagePercent"`
 	// Cores はコアごとの使用率（0〜100）。
 	Cores []float64 `json:"cores"`
+	// TemperatureC は CPU のパッケージ温度（℃、複数ソケットなら最も高いもの）。取得できない場合は nil（null）。
+	TemperatureC *float64 `json:"temperatureC"`
 }
 
 // MemoryMetrics は MemoryMetricsSchema に対応する。
